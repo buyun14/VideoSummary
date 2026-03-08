@@ -61,9 +61,37 @@ winget install Gyan.FFmpeg
 - `keyframe planner`：按分数生成截图时间戳与上下文窗口
 - 轻量规则 + LLM 混合策略，避免全量 VLM 成本
 
-## 6. 运行第二阶段（Router 原型）
+## 6. 运行第二阶段（默认：固定间隔采样）
 
-在第一阶段结束后，使用 `transcript.segments.jsonl` 生成关键帧计划：
+先采用固定时间戳截屏，不做意图识别。该步骤会生成：
+- 固定间隔关键帧计划
+- 截图文件（可关闭）
+- 给视觉模型使用的载荷 `vlm_payload.jsonl`
+- 可选附加：对应分片文本、上下文窗口文本、音频摘要
+
+```powershell
+.\.venv\Scripts\python -m videosummary.cli phase2-fixed --phase1-dir "outputs/屏幕录制 2025-04-17 193845/phase1" --interval-seconds 30 --context-window 1 --with-audio-summary
+```
+
+可选参数：
+- `--no-capture-images`：只生成计划和载荷，不实际截图
+- `--without-segment-text`：不附加当前时间点分片文本
+- `--context-window 0|1|2...`：附加前后分片窗口
+- `--with-audio-summary`：附加 phase1 音频摘要（用于缓解断章截屏）
+- `--summary-max-points 8`：摘要时间线要点条数
+- `--start-seconds` / `--end-trim-seconds`：控制采样范围
+
+默认输出目录：`outputs/<视频名>/phase2_fixed/`
+
+主要产物：
+- `fixed_keyframe_plan.json`
+- `vlm_payload.jsonl`
+- `screenshots/`
+- `phase2_fixed_manifest.json`
+
+## 7. 可选高级模式（Router）
+
+在你确认固定采样基线后，再使用 router 进行更精细筛选：
 
 ```powershell
 .\.venv\Scripts\python -m videosummary.cli router --transcript-jsonl "outputs/屏幕录制 2025-04-17 193845/phase1/transcript.segments.jsonl"
@@ -83,3 +111,35 @@ winget install Gyan.FFmpeg
 - `keyframe_plan.json`：可被后续截图/VLM模块直接消费
 - `keyframe_plan.md`：人可读的关键帧说明
 - `phase2_router_manifest.json`：运行统计与产物路径
+
+## 8. 第三阶段（VLM 分析）
+
+基于第二阶段 `vlm_payload.jsonl` 调用 OpenAI 兼容接口（如 SiliconFlow）进行逐帧分析。
+
+先设置环境变量（推荐，不把 key 写进命令）：
+
+```powershell
+$env:SILICONFLOW_API_KEY="<your_api_key>"
+```
+
+也支持在项目根目录放置 `.env`（例如 `SILICONFLOW_API_KEY=...`），CLI 会自动读取。
+
+执行：
+
+```powershell
+.\.venv\Scripts\python -m videosummary.cli phase3-vlm --vlm-payload-jsonl "outputs/屏幕录制 2025-04-17 193845/phase2_fixed/vlm_payload.jsonl" --api-base "https://api.siliconflow.cn/v1" --model "deepseek-ai/DeepSeek-OCR" --max-items 3
+```
+
+说明：`deepseek-ai/DeepSeek-OCR` 更偏 OCR/文档抽取，若用于“画面理解+解释”可能返回过短。建议在第三阶段优先选用通用视觉对话模型，OCR 模型作为补充通道。
+
+可选参数：
+- `--without-image`：仅发送文本上下文用于对照实验
+- `--max-items N`：只跑前 N 条，便于快速调试
+- `--temperature 0.2`：采样温度
+- `--timeout-seconds 120`
+
+输出目录（默认）：`outputs/<视频名>/phase2_fixed/phase3_vlm/`
+
+主要产物：
+- `visual_analysis.jsonl`：每帧的视觉分析结果
+- `phase3_vlm_manifest.json`：调用统计（成功/失败）

@@ -1,10 +1,28 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
+from videosummary.phase2_fixed import Phase2FixedConfig, run_phase2_fixed
+from videosummary.phase3_vlm import Phase3VlmConfig, run_phase3_vlm
 from videosummary.pipeline_phase1 import Phase1Config, run_phase1
 from videosummary.router_phase2 import RouterConfig, run_router
+
+
+def _load_dotenv_if_present(dotenv_path: Path = Path(".env")) -> None:
+    if not dotenv_path.exists():
+        return
+
+    for raw_line in dotenv_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if (not line) or line.startswith("#") or ("=" not in line):
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and (key not in os.environ):
+            os.environ[key] = value
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -36,10 +54,80 @@ def build_parser() -> argparse.ArgumentParser:
     router.add_argument("--merge-gap-seconds", type=float, default=8.0, help="Merge adjacent windows")
     router.add_argument("--context-window", type=int, default=1, help="Neighbor segments for context")
     router.add_argument("--min-plan-items", type=int, default=8, help="Backfill to at least N items")
+
+    phase2_fixed = subparsers.add_parser(
+        "phase2-fixed",
+        help="Run phase2 fixed-interval screenshot + VLM payload preparation",
+    )
+    phase2_fixed.add_argument("--phase1-dir", required=True, help="Phase1 output directory")
+    phase2_fixed.add_argument(
+        "--output",
+        default=None,
+        help="Phase2 output directory (default: sibling phase2_fixed)",
+    )
+    phase2_fixed.add_argument("--interval-seconds", type=float, default=30.0, help="Fixed capture interval")
+    phase2_fixed.add_argument("--start-seconds", type=float, default=0.0, help="Capture start")
+    phase2_fixed.add_argument("--end-trim-seconds", type=float, default=2.0, help="Skip tail seconds")
+    phase2_fixed.add_argument(
+        "--no-capture-images",
+        action="store_true",
+        help="Only generate plan/payload without ffmpeg screenshots",
+    )
+    phase2_fixed.add_argument("--image-format", default="jpg", choices=["jpg", "png"], help="Image format")
+    phase2_fixed.add_argument(
+        "--without-segment-text",
+        action="store_true",
+        help="Disable aligned transcript segment text",
+    )
+    phase2_fixed.add_argument("--context-window", type=int, default=1, help="Neighbor transcript window size")
+    phase2_fixed.add_argument(
+        "--with-audio-summary",
+        action="store_true",
+        help="Attach compact phase1 audio summary to each payload",
+    )
+    phase2_fixed.add_argument(
+        "--summary-max-points",
+        type=int,
+        default=8,
+        help="Max timeline bullets for generated audio summary",
+    )
+
+    phase3_vlm = subparsers.add_parser(
+        "phase3-vlm",
+        help="Run phase3 VLM analysis on phase2 payload",
+    )
+    phase3_vlm.add_argument("--vlm-payload-jsonl", required=True, help="Input payload from phase2-fixed")
+    phase3_vlm.add_argument(
+        "--output",
+        default=None,
+        help="Phase3 output directory (default: sibling phase3_vlm)",
+    )
+    phase3_vlm.add_argument("--api-base", default="https://api.siliconflow.cn/v1", help="API base URL")
+    phase3_vlm.add_argument("--model", default="deepseek-ai/DeepSeek-OCR", help="VLM model name")
+    phase3_vlm.add_argument("--api-key", default=None, help="API key (prefer environment variable)")
+    phase3_vlm.add_argument(
+        "--api-key-env",
+        default="SILICONFLOW_API_KEY",
+        help="Environment variable that stores API key",
+    )
+    phase3_vlm.add_argument(
+        "--without-image",
+        action="store_true",
+        help="Send text-only context without image to compare effect",
+    )
+    phase3_vlm.add_argument("--temperature", type=float, default=0.2, help="Sampling temperature")
+    phase3_vlm.add_argument("--timeout-seconds", type=float, default=120.0, help="HTTP timeout")
+    phase3_vlm.add_argument(
+        "--max-items",
+        type=int,
+        default=0,
+        help="Limit processed items (0 means all)",
+    )
     return parser
 
 
 def main() -> None:
+    _load_dotenv_if_present()
     args = build_parser().parse_args()
 
     if args.command == "router":
@@ -62,6 +150,55 @@ def main() -> None:
             )
         )
         print(f"Phase-2 router completed: {run_dir}")
+        return
+
+    if args.command == "phase2-fixed":
+        phase1_dir = Path(args.phase1_dir).resolve()
+        if args.output:
+            output_root = Path(args.output).resolve()
+        else:
+            output_root = phase1_dir.parent / "phase2_fixed"
+
+        run_dir = run_phase2_fixed(
+            Phase2FixedConfig(
+                phase1_dir=phase1_dir,
+                output_root=output_root,
+                interval_seconds=args.interval_seconds,
+                start_seconds=args.start_seconds,
+                end_trim_seconds=args.end_trim_seconds,
+                capture_images=not args.no_capture_images,
+                image_format=args.image_format,
+                with_segment_text=not args.without_segment_text,
+                context_window=args.context_window,
+                with_audio_summary=args.with_audio_summary,
+                summary_max_points=args.summary_max_points,
+            )
+        )
+        print(f"Phase-2 fixed completed: {run_dir}")
+        return
+
+    if args.command == "phase3-vlm":
+        payload_jsonl = Path(args.vlm_payload_jsonl).resolve()
+        if args.output:
+            output_root = Path(args.output).resolve()
+        else:
+            output_root = payload_jsonl.parent / "phase3_vlm"
+
+        run_dir = run_phase3_vlm(
+            Phase3VlmConfig(
+                vlm_payload_jsonl=payload_jsonl,
+                output_root=output_root,
+                api_base=args.api_base,
+                model=args.model,
+                api_key=args.api_key,
+                api_key_env=args.api_key_env,
+                include_image=not args.without_image,
+                temperature=args.temperature,
+                timeout_seconds=args.timeout_seconds,
+                max_items=args.max_items,
+            )
+        )
+        print(f"Phase-3 VLM completed: {run_dir}")
         return
 
     phase1_input = args.input
