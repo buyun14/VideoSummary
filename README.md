@@ -60,3 +60,26 @@ winget install Gyan.FFmpeg
 - `router` 模块：对转录文本打“视觉依赖分数”
 - `keyframe planner`：按分数生成截图时间戳与上下文窗口
 - 轻量规则 + LLM 混合策略，避免全量 VLM 成本
+
+## 6. 运行第二阶段（Router 原型）
+
+在第一阶段结束后，使用 `transcript.segments.jsonl` 生成关键帧计划：
+
+```powershell
+.\.venv\Scripts\python -m videosummary.cli router --transcript-jsonl "outputs/屏幕录制 2025-04-17 193845/phase1/transcript.segments.jsonl"
+```
+
+可选参数：
+- `--top-k 18`：候选上限（合并前）
+- `--min-score 2.0`：视觉依赖阈值
+- `--merge-gap-seconds 8`：时间相邻窗口合并阈值
+- `--context-window 1`：输出上下文片段数
+- `--min-plan-items 8`：若规则命中过少，自动按时间轴均匀补采样
+
+默认会输出到同视频目录下：`outputs/<视频名>/phase2/`
+
+主要产物：
+- `router.scored_segments.jsonl`：每条转录片段的路由分数
+- `keyframe_plan.json`：可被后续截图/VLM模块直接消费
+- `keyframe_plan.md`：人可读的关键帧说明
+- `phase2_router_manifest.json`：运行统计与产物路径
