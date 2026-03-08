@@ -143,3 +143,29 @@ $env:SILICONFLOW_API_KEY="<your_api_key>"
 主要产物：
 - `visual_analysis.jsonl`：每帧的视觉分析结果
 - `phase3_vlm_manifest.json`：调用统计（成功/失败）
+
+## 9. 第四阶段（最终总结聚合）
+
+第四阶段会基于 `phase1 + phase3` 直接生成你关注的三类结果：
+- 优化/纠错后的原始音频总结
+- 关键时间戳总结文本（含截图路径、单帧理解、上下文）
+- 最终视频总结
+
+命令示例：
+
+```powershell
+.\.venv\Scripts\python -m videosummary.cli phase4-summary --phase1-dir "outputs/屏幕录制 2025-04-17 193845/phase1" --phase3-jsonl "outputs/屏幕录制 2025-04-17 193845/phase2_fixed/phase3_vlm_qwen3vl8b_dotenv/visual_analysis.jsonl" --phase2-payload-jsonl "outputs/屏幕录制 2025-04-17 193845/phase2_fixed/vlm_payload.jsonl" --use-llm-polish --llm-model "Qwen/Qwen3-8B"
+```
+
+可选参数：
+- `--use-llm-polish`：开启模型优化总结（不开启也会产出可读 fallback）
+- `--max-key-moments 12`：关键时间戳条目上限
+- `--api-base` / `--api-key` / `--api-key-env`：模型调用配置
+
+默认输出目录：`<phase3目录>/phase4_summary/`
+
+主要产物：
+- `audio_summary_optimized.md`
+- `key_moments_summary.md`
+- `final_video_summary.md`
+- `phase4_summary_manifest.json`

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from videosummary.phase2_fixed import Phase2FixedConfig, run_phase2_fixed
 from videosummary.phase3_vlm import Phase3VlmConfig, run_phase3_vlm
+from videosummary.phase4_summary import Phase4SummaryConfig, run_phase4_summary
 from videosummary.pipeline_phase1 import Phase1Config, run_phase1
 from videosummary.router_phase2 import RouterConfig, run_router
 
@@ -123,6 +124,47 @@ def build_parser() -> argparse.ArgumentParser:
         default=0,
         help="Limit processed items (0 means all)",
     )
+
+    phase4_summary = subparsers.add_parser(
+        "phase4-summary",
+        help="Generate final summaries from phase1 + phase3 outputs",
+    )
+    phase4_summary.add_argument("--phase1-dir", required=True, help="Phase1 output directory")
+    phase4_summary.add_argument(
+        "--phase3-jsonl",
+        required=True,
+        help="Phase3 visual_analysis.jsonl path",
+    )
+    phase4_summary.add_argument(
+        "--phase2-payload-jsonl",
+        default=None,
+        help="Optional phase2 vlm_payload.jsonl to enrich context",
+    )
+    phase4_summary.add_argument(
+        "--output",
+        default=None,
+        help="Phase4 output directory (default: sibling phase4_summary)",
+    )
+    phase4_summary.add_argument(
+        "--use-llm-polish",
+        action="store_true",
+        help="Use LLM to polish audio summary and final summary",
+    )
+    phase4_summary.add_argument("--api-base", default="https://api.siliconflow.cn/v1", help="API base URL")
+    phase4_summary.add_argument("--llm-model", default="Qwen/Qwen3-8B", help="Text model name")
+    phase4_summary.add_argument("--api-key", default=None, help="API key (prefer environment variable)")
+    phase4_summary.add_argument(
+        "--api-key-env",
+        default="SILICONFLOW_API_KEY",
+        help="Environment variable that stores API key",
+    )
+    phase4_summary.add_argument("--timeout-seconds", type=float, default=120.0, help="HTTP timeout")
+    phase4_summary.add_argument(
+        "--max-key-moments",
+        type=int,
+        default=12,
+        help="Max key timestamps in key_moments_summary",
+    )
     return parser
 
 
@@ -199,6 +241,35 @@ def main() -> None:
             )
         )
         print(f"Phase-3 VLM completed: {run_dir}")
+        return
+
+    if args.command == "phase4-summary":
+        phase1_dir = Path(args.phase1_dir).resolve()
+        phase3_jsonl = Path(args.phase3_jsonl).resolve()
+
+        if args.output:
+            output_root = Path(args.output).resolve()
+        else:
+            output_root = phase3_jsonl.parent / "phase4_summary"
+
+        phase2_payload_jsonl = Path(args.phase2_payload_jsonl).resolve() if args.phase2_payload_jsonl else None
+
+        run_dir = run_phase4_summary(
+            Phase4SummaryConfig(
+                phase1_dir=phase1_dir,
+                phase3_jsonl=phase3_jsonl,
+                phase2_payload_jsonl=phase2_payload_jsonl,
+                output_root=output_root,
+                use_llm_polish=args.use_llm_polish,
+                api_base=args.api_base,
+                llm_model=args.llm_model,
+                api_key=args.api_key,
+                api_key_env=args.api_key_env,
+                timeout_seconds=args.timeout_seconds,
+                max_key_moments=args.max_key_moments,
+            )
+        )
+        print(f"Phase-4 summary completed: {run_dir}")
         return
 
     phase1_input = args.input
