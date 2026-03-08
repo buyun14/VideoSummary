@@ -9,6 +9,8 @@ from typing import Any
 
 import httpx
 
+from videosummary.logging_utils import log_phase, timed_step
+
 
 @dataclass
 class Phase4SummaryConfig:
@@ -259,6 +261,7 @@ def _build_final_summary_fallback(
 
 
 def run_phase4_summary(config: Phase4SummaryConfig) -> Path:
+    phase = "phase4-summary"
     phase1_dir = config.phase1_dir.resolve()
     phase3_jsonl = config.phase3_jsonl.resolve()
     if not phase1_dir.exists():
@@ -274,6 +277,7 @@ def run_phase4_summary(config: Phase4SummaryConfig) -> Path:
     transcript_meta = transcript_full.get("meta", {})
     segments = list(transcript_full.get("segments", []))
     phase3_rows = _read_jsonl(phase3_jsonl)
+    log_phase(phase, f"读取输入完成: transcript_segments={len(segments)}, phase3_items={len(phase3_rows)}")
 
     payload_rows_by_id: dict[int, dict[str, Any]] = {}
     if config.phase2_payload_jsonl and config.phase2_payload_jsonl.exists():
@@ -284,12 +288,15 @@ def run_phase4_summary(config: Phase4SummaryConfig) -> Path:
 
     output_dir = config.output_root.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    log_phase(phase, f"输出目录: {output_dir}")
 
     timeline = _build_audio_timeline(segments)
     transcript_excerpt = _build_transcript_excerpt(segments)
 
     api_key = config.api_key or os.getenv(config.api_key_env)
     llm_available = bool(config.use_llm_polish and api_key)
+    if config.use_llm_polish and not api_key:
+        log_phase(phase, f"未检测到 API Key ({config.api_key_env})，自动回退为无模型润色模式")
 
     polished_audio_summary: str | None = None
     audio_error: str | None = None
@@ -302,17 +309,19 @@ def run_phase4_summary(config: Phase4SummaryConfig) -> Path:
             "[转写摘录]\n"
             f"{transcript_excerpt}"
         )
-        try:
-            polished_audio_summary = _llm_chat(
-                api_base=config.api_base,
-                api_key=str(api_key),
-                model=config.llm_model,
-                timeout_seconds=config.timeout_seconds,
-                system_prompt="You are a precise Chinese meeting/video summarizer.",
-                user_prompt=audio_prompt,
-            )
-        except Exception as exc:
-            audio_error = str(exc)
+        with timed_step(phase, "生成音频纠错总结 (LLM)"):
+            try:
+                polished_audio_summary = _llm_chat(
+                    api_base=config.api_base,
+                    api_key=str(api_key),
+                    model=config.llm_model,
+                    timeout_seconds=config.timeout_seconds,
+                    system_prompt="You are a precise Chinese meeting/video summarizer.",
+                    user_prompt=audio_prompt,
+                )
+            except Exception as exc:
+                audio_error = str(exc)
+                log_phase(phase, f"音频总结 LLM 失败: {audio_error}")
 
     audio_summary_md = _build_audio_summary_markdown(
         transcript_meta=transcript_meta,
@@ -331,20 +340,22 @@ def run_phase4_summary(config: Phase4SummaryConfig) -> Path:
     final_summary_md: str
     final_error: str | None = None
     if llm_available:
-        try:
-            final_summary_md = _llm_chat(
-                api_base=config.api_base,
-                api_key=str(api_key),
-                model=config.llm_model,
-                timeout_seconds=config.timeout_seconds,
-                system_prompt="You are a rigorous Chinese video summarization assistant.",
-                user_prompt=_build_final_summary_prompt(audio_summary_md, key_moments_md),
-            )
-            if not final_summary_md.startswith("#"):
-                final_summary_md = "# 最终视频总结\n\n" + final_summary_md
-        except Exception as exc:
-            final_error = str(exc)
-            final_summary_md = _build_final_summary_fallback(audio_summary_md, moments)
+        with timed_step(phase, "生成最终视频总结 (LLM)"):
+            try:
+                final_summary_md = _llm_chat(
+                    api_base=config.api_base,
+                    api_key=str(api_key),
+                    model=config.llm_model,
+                    timeout_seconds=config.timeout_seconds,
+                    system_prompt="You are a rigorous Chinese video summarization assistant.",
+                    user_prompt=_build_final_summary_prompt(audio_summary_md, key_moments_md),
+                )
+                if not final_summary_md.startswith("#"):
+                    final_summary_md = "# 最终视频总结\n\n" + final_summary_md
+            except Exception as exc:
+                final_error = str(exc)
+                log_phase(phase, f"最终总结 LLM 失败，回退 fallback: {final_error}")
+                final_summary_md = _build_final_summary_fallback(audio_summary_md, moments)
     else:
         final_summary_md = _build_final_summary_fallback(audio_summary_md, moments)
 
@@ -356,6 +367,7 @@ def run_phase4_summary(config: Phase4SummaryConfig) -> Path:
     audio_summary_path.write_text(audio_summary_md, encoding="utf-8")
     key_moments_path.write_text(key_moments_md, encoding="utf-8")
     final_summary_path.write_text(final_summary_md, encoding="utf-8")
+    log_phase(phase, f"产物写入完成: {audio_summary_path.name}, {key_moments_path.name}, {final_summary_path.name}")
 
     manifest = {
         "stage": "phase4_summary",
@@ -391,5 +403,6 @@ def run_phase4_summary(config: Phase4SummaryConfig) -> Path:
         },
     }
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    log_phase(phase, f"阶段完成，manifest: {manifest_path}")
 
     return output_dir

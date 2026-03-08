@@ -29,10 +29,42 @@ winget install Gyan.FFmpeg
 .\.venv\Scripts\python -m videosummary.cli --input "data_test/屏幕录制 2025-04-17 193845.mp4" --output outputs --model small --device auto --compute-type int8
 ```
 
+通用可观测参数（所有子命令可用）：
+- `--verbose`：显示中文友好进度日志
+- `--debug`：显示更详细调试日志
+- `--log-file logs/run.log`：落盘日志文件，便于排障
+
 可选参数：
 - `--language zh`：固定中文识别（不填则自动检测）
 - `--model tiny|base|small|medium|large-v3`：模型大小与成本/精度可权衡
 - `--device cpu|cuda|auto`：运行设备
+- `--model-path <本地模型目录>`：使用本地 Whisper 模型，避免联网下载
+- `--hf-endpoint https://hf-mirror.com`：使用镜像源（国内推荐）
+- `--http-proxy` / `--https-proxy`：代理配置
+- `--hf-home <缓存目录>`：指定模型缓存目录
+- `--offline`：离线模式（仅使用本地缓存/本地模型）
+
+### 2.1 网络不稳定时的建议（Phase1）
+
+常见错误：`httpx.ConnectTimeout: [WinError 10060]`、`LocalEntryNotFoundError`
+
+推荐命令：
+
+```powershell
+.\.venv\Scripts\python -m videosummary.cli --verbose phase1 --input "data_test/Base Profile 2025.07.09 - 17.20.58.03.mp4" --model small --hf-endpoint "https://hf-mirror.com" --https-proxy "http://127.0.0.1:7890"
+```
+
+若已有本地模型目录：
+
+```powershell
+.\.venv\Scripts\python -m videosummary.cli --verbose phase1 --input "data_test/Base Profile 2025.07.09 - 17.20.58.03.mp4" --model-path "D:/models/faster-whisper-small" --offline
+```
+
+日志默认使用 UTF-8 输出；Windows 终端若仍乱码，建议在 PowerShell 先执行：
+
+```powershell
+chcp 65001
+```
 
 ## 3. 输出目录说明
 
@@ -74,6 +106,7 @@ winget install Gyan.FFmpeg
 ```
 
 可选参数：
+- `--preset default|game|speech`：友好预设（游戏/讲解视频）
 - `--no-capture-images`：只生成计划和载荷，不实际截图
 - `--without-segment-text`：不附加当前时间点分片文本
 - `--context-window 0|1|2...`：附加前后分片窗口
@@ -133,10 +166,14 @@ $env:SILICONFLOW_API_KEY="<your_api_key>"
 说明：`deepseek-ai/DeepSeek-OCR` 更偏 OCR/文档抽取，若用于“画面理解+解释”可能返回过短。建议在第三阶段优先选用通用视觉对话模型，OCR 模型作为补充通道。
 
 可选参数：
+- `--preset default|game|speech`：友好预设（会调整超时、温度等）
 - `--without-image`：仅发送文本上下文用于对照实验
 - `--max-items N`：只跑前 N 条，便于快速调试
 - `--temperature 0.2`：采样温度
 - `--timeout-seconds 120`
+- `--concurrency 3`：并发请求数（建议 2~6）
+- `--max-retries 1`：失败重试次数
+- `--retry-backoff-seconds 2`：重试等待秒数
 
 输出目录（默认）：`outputs/<视频名>/phase2_fixed/phase3_vlm/`
 
@@ -158,6 +195,7 @@ $env:SILICONFLOW_API_KEY="<your_api_key>"
 ```
 
 可选参数：
+- `--preset default|game|speech`：友好预设（会调整关键时刻数量）
 - `--use-llm-polish`：开启模型优化总结（不开启也会产出可读 fallback）
 - `--max-key-moments 12`：关键时间戳条目上限
 - `--api-base` / `--api-key` / `--api-key-env`：模型调用配置
@@ -169,3 +207,28 @@ $env:SILICONFLOW_API_KEY="<your_api_key>"
 - `key_moments_summary.md`
 - `final_video_summary.md`
 - `phase4_summary_manifest.json`
+
+## 10. 一键运行全流程（推荐）
+
+```powershell
+.\.venv\Scripts\python -m videosummary.cli --verbose --log-file "logs/game_run.log" run-all --input "data_test/Base Profile 2025.07.09 - 17.20.58.03.mp4" --preset game --with-audio-summary --use-llm-polish
+```
+
+可追加参数：
+- `--concurrency 4`：提高 phase3 并发度
+- `--max-retries 1 --retry-backoff-seconds 2`：控制失败重试策略
+
+说明：`run-all` 会自动顺序执行 phase1 -> phase2-fixed -> phase3-vlm -> phase4-summary。
+
+## 11. 简易 GUI 控制面板
+
+```powershell
+.\.venv\Scripts\python -m videosummary.cli gui
+```
+
+GUI 功能：
+- 选择视频和输出目录
+- 选择预设与模型参数
+- 配置 HF 镜像、代理、本地模型目录、离线模式
+- 一键运行全流程
+- 实时查看日志并可手动停止

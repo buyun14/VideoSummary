@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from videosummary.logging_utils import log_phase, timed_step
+
 
 VISUAL_CUE_PATTERNS = [
     re.compile(pattern, re.IGNORECASE)
@@ -174,39 +176,44 @@ def _backfill_evenly(
 
 
 def run_router(config: RouterConfig) -> Path:
+    phase = "phase2-router"
     if not config.transcript_jsonl.exists():
         raise FileNotFoundError(f"Transcript JSONL not found: {config.transcript_jsonl}")
 
-    segments = _read_jsonl(config.transcript_jsonl)
+    with timed_step(phase, "读取 transcript"):
+        segments = _read_jsonl(config.transcript_jsonl)
+    log_phase(phase, f"片段总数: {len(segments)}")
     scored: list[dict[str, Any]] = []
 
-    for idx, segment in enumerate(segments):
-        text = str(segment.get("text", "")).strip()
-        score, reasons = _score_segment(text)
-        scored.append(
-            {
-                "id": segment.get("id", idx),
-                "index": idx,
-                "start": float(segment["start"]),
-                "end": float(segment["end"]),
-                "text": text,
-                "score": score,
-                "reasons": reasons,
-            }
-        )
+    with timed_step(phase, "规则打分与候选筛选"):
+        for idx, segment in enumerate(segments):
+            text = str(segment.get("text", "")).strip()
+            score, reasons = _score_segment(text)
+            scored.append(
+                {
+                    "id": segment.get("id", idx),
+                    "index": idx,
+                    "start": float(segment["start"]),
+                    "end": float(segment["end"]),
+                    "text": text,
+                    "score": score,
+                    "reasons": reasons,
+                }
+            )
 
-    high_value = [x for x in scored if x["score"] >= config.min_score]
-    ranked = sorted(high_value, key=lambda x: (-float(x["score"]), float(x["start"])))
-    top_ranked = ranked[: config.top_k]
-    merged = _merge_candidates(
-        sorted(top_ranked, key=lambda x: float(x["start"])),
-        merge_gap_seconds=config.merge_gap_seconds,
-    )
-    merged = _backfill_evenly(
-        scored=sorted(scored, key=lambda x: float(x["start"])),
-        selected=merged,
-        min_plan_items=config.min_plan_items,
-    )
+        high_value = [x for x in scored if x["score"] >= config.min_score]
+        ranked = sorted(high_value, key=lambda x: (-float(x["score"]), float(x["start"])))
+        top_ranked = ranked[: config.top_k]
+        merged = _merge_candidates(
+            sorted(top_ranked, key=lambda x: float(x["start"])),
+            merge_gap_seconds=config.merge_gap_seconds,
+        )
+        merged = _backfill_evenly(
+            scored=sorted(scored, key=lambda x: float(x["start"])),
+            selected=merged,
+            min_plan_items=config.min_plan_items,
+        )
+    log_phase(phase, f"阈值命中={len(high_value)}，最终计划项={len(merged)}")
 
     phase2_dir = config.output_root
     phase2_dir.mkdir(parents=True, exist_ok=True)
@@ -286,5 +293,6 @@ def run_router(config: RouterConfig) -> Path:
         json.dumps(manifest_payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    log_phase(phase, f"阶段完成，manifest: {manifest_path}")
 
     return phase2_dir

@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from videosummary.logging_utils import log_phase, timed_step
+
 
 @dataclass
 class Phase2FixedConfig:
@@ -136,6 +138,7 @@ def _capture_frame(video_path: Path, timestamp: float, image_path: Path) -> None
 
 
 def run_phase2_fixed(config: Phase2FixedConfig) -> Path:
+    phase = "phase2-fixed"
     phase1_dir = config.phase1_dir.resolve()
     if not phase1_dir.exists():
         raise FileNotFoundError(f"phase1 dir not found: {phase1_dir}")
@@ -154,6 +157,7 @@ def run_phase2_fixed(config: Phase2FixedConfig) -> Path:
     phase1_manifest = _read_json(phase1_manifest_path)
     transcript_full = _read_json(transcript_full_path)
     segments = _read_jsonl(transcript_jsonl_path)
+    log_phase(phase, f"读取 phase1 成功: 片段数={len(segments)}")
 
     video_path = Path(phase1_manifest["video"])
     if not video_path.exists():
@@ -162,44 +166,50 @@ def run_phase2_fixed(config: Phase2FixedConfig) -> Path:
     duration = float(transcript_full["meta"]["duration"])
     end_limit = max(0.0, duration - max(0.0, config.end_trim_seconds))
     timestamps = _timestamps(config.start_seconds, end_limit, config.interval_seconds)
+    log_phase(phase, f"计划截帧数量={len(timestamps)}, 视频时长={duration:.2f}s")
 
     output_dir = config.output_root.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     image_dir = output_dir / "screenshots"
+    log_phase(phase, f"输出目录: {output_dir}")
 
     audio_summary = ""
     if config.with_audio_summary:
         audio_summary = _build_audio_summary(segments, max_points=config.summary_max_points)
 
     plan_items: list[dict[str, Any]] = []
-    for i, timestamp in enumerate(timestamps, start=1):
-        center_idx = _nearest_segment_index(segments, timestamp)
-        seg_text = ""
-        if center_idx >= 0 and config.with_segment_text:
-            seg_text = str(segments[center_idx].get("text", "")).strip()
+    with timed_step(phase, "构建关键帧计划并生成 payload"):
+        for i, timestamp in enumerate(timestamps, start=1):
+            center_idx = _nearest_segment_index(segments, timestamp)
+            seg_text = ""
+            if center_idx >= 0 and config.with_segment_text:
+                seg_text = str(segments[center_idx].get("text", "")).strip()
 
-        context_text = ""
-        if center_idx >= 0 and config.context_window > 0:
-            context_text = _context_text(segments, center_idx=center_idx, window=config.context_window)
+            context_text = ""
+            if center_idx >= 0 and config.context_window > 0:
+                context_text = _context_text(segments, center_idx=center_idx, window=config.context_window)
 
-        image_path = image_dir / f"frame_{i:04d}_{int(round(timestamp * 1000)):010d}.{config.image_format}"
-        if config.capture_images:
-            _capture_frame(video_path, timestamp, image_path)
+            image_path = image_dir / f"frame_{i:04d}_{int(round(timestamp * 1000)):010d}.{config.image_format}"
+            if config.capture_images:
+                _capture_frame(video_path, timestamp, image_path)
 
-        item: dict[str, Any] = {
-            "id": i,
-            "capture_time": timestamp,
-            "capture_time_ts": _format_ts(timestamp),
-            "relative_position": round(timestamp / duration, 6) if duration > 0 else 0.0,
-            "image_path": str(image_path),
-            "segment_text": seg_text,
-            "context_text": context_text,
-        }
+            item: dict[str, Any] = {
+                "id": i,
+                "capture_time": timestamp,
+                "capture_time_ts": _format_ts(timestamp),
+                "relative_position": round(timestamp / duration, 6) if duration > 0 else 0.0,
+                "image_path": str(image_path),
+                "segment_text": seg_text,
+                "context_text": context_text,
+            }
 
-        if config.with_audio_summary:
-            item["audio_summary"] = audio_summary
+            if config.with_audio_summary:
+                item["audio_summary"] = audio_summary
 
-        plan_items.append(item)
+            plan_items.append(item)
+
+            if i % 10 == 0 or i == len(timestamps):
+                log_phase(phase, f"进度: {i}/{len(timestamps)} 帧")
 
     plan_json_path = output_dir / "fixed_keyframe_plan.json"
     vlm_payload_jsonl_path = output_dir / "vlm_payload.jsonl"
@@ -226,28 +236,29 @@ def run_phase2_fixed(config: Phase2FixedConfig) -> Path:
         },
         "items": plan_items,
     }
-    plan_json_path.write_text(
-        json.dumps(plan_payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    with timed_step(phase, "写入阶段产物"):
+        plan_json_path.write_text(
+            json.dumps(plan_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
 
-    with vlm_payload_jsonl_path.open("w", encoding="utf-8") as f:
-        for item in plan_items:
-            payload = {
-                "id": item["id"],
-                "image_path": item["image_path"],
-                "capture_time": item["capture_time"],
-                "capture_time_ts": item["capture_time_ts"],
-                "relative_position": item["relative_position"],
-                "segment_text": item["segment_text"],
-                "context_text": item["context_text"],
-            }
-            if config.with_audio_summary:
-                payload["audio_summary"] = item.get("audio_summary", "")
-            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        with vlm_payload_jsonl_path.open("w", encoding="utf-8") as f:
+            for item in plan_items:
+                payload = {
+                    "id": item["id"],
+                    "image_path": item["image_path"],
+                    "capture_time": item["capture_time"],
+                    "capture_time_ts": item["capture_time_ts"],
+                    "relative_position": item["relative_position"],
+                    "segment_text": item["segment_text"],
+                    "context_text": item["context_text"],
+                }
+                if config.with_audio_summary:
+                    payload["audio_summary"] = item.get("audio_summary", "")
+                f.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
-    if config.with_audio_summary:
-        summary_txt_path.write_text(audio_summary, encoding="utf-8")
+        if config.with_audio_summary:
+            summary_txt_path.write_text(audio_summary, encoding="utf-8")
 
     manifest = {
         "stage": "phase2_fixed",
@@ -270,5 +281,6 @@ def run_phase2_fixed(config: Phase2FixedConfig) -> Path:
         },
     }
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    log_phase(phase, f"阶段完成，manifest: {manifest_path}")
 
     return output_dir
