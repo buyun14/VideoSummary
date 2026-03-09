@@ -20,11 +20,22 @@ class VideoSummaryPanel:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("VideoSummary 控制面板")
-        self.root.geometry("1080x760")
+        self.root.geometry("1220x820")
 
         self.log_queue: queue.Queue[str] = queue.Queue()
         self.process: subprocess.Popen[str] | None = None
         self.custom_presets: dict[str, dict[str, object]] = {}
+        self.control_widgets: list[tk.Widget] = []
+        self.status_var = tk.StringVar(value="空闲")
+        self.log_history: list[str] = []
+        self.log_window: tk.Toplevel | None = None
+        self.log_popup_text: tk.Text | None = None
+        self.left_section_frame: ttk.LabelFrame | None = None
+        self.right_section_frame: ttk.LabelFrame | None = None
+        self.log_preview_frame: ttk.Frame | None = None
+        self.toggle_left_btn: ttk.Button | None = None
+        self.toggle_right_btn: ttk.Button | None = None
+        self.toggle_log_btn: ttk.Button | None = None
 
         self.input_var = tk.StringVar(value="")
         self.output_var = tk.StringVar(value="outputs")
@@ -166,139 +177,276 @@ class VideoSummaryPanel:
         return sys.executable
 
     def _build_form(self) -> None:
-        frame = ttk.Frame(self.root, padding=12)
-        frame.pack(fill=tk.X)
+        root_frame = ttk.Frame(self.root, padding=12)
+        root_frame.pack(fill=tk.X)
+        root_frame.columnconfigure(0, weight=1)
 
-        row = 0
-        ttk.Label(frame, text="输入视频").grid(row=row, column=0, sticky=tk.W)
-        ttk.Entry(frame, textvariable=self.input_var, width=92).grid(row=row, column=1, sticky=tk.W)
-        ttk.Button(frame, text="浏览", command=self._pick_input).grid(row=row, column=2, padx=8)
+        top = ttk.LabelFrame(root_frame, text="输入与预设", padding=10)
+        top.grid(row=0, column=0, sticky="ew")
+        top.columnconfigure(1, weight=1)
 
-        row += 1
-        ttk.Label(frame, text="输出目录").grid(row=row, column=0, sticky=tk.W)
-        ttk.Entry(frame, textvariable=self.output_var, width=92).grid(row=row, column=1, sticky=tk.W)
-        ttk.Button(frame, text="浏览", command=self._pick_output).grid(row=row, column=2, padx=8)
+        ttk.Label(top, text="输入视频").grid(row=0, column=0, sticky=tk.W)
+        ttk.Entry(top, textvariable=self.input_var).grid(row=0, column=1, sticky="ew", padx=(8, 8))
+        pick_input_btn = ttk.Button(top, text="浏览", command=self._pick_input)
+        pick_input_btn.grid(row=0, column=2)
 
-        row += 1
-        ttk.Label(frame, text="预设").grid(row=row, column=0, sticky=tk.W)
-        self.preset_combo = ttk.Combobox(frame, textvariable=self.preset_var, values=self._builtin_presets, width=18)
-        self.preset_combo.grid(row=row, column=1, sticky=tk.W)
-        ttk.Button(frame, text="载入预设", command=self._load_selected_preset).grid(row=row, column=1, sticky=tk.W, padx=(170, 0))
-        ttk.Button(frame, text="另存预设", command=self._save_as_preset).grid(row=row, column=1, sticky=tk.W, padx=(255, 0))
-        ttk.Button(frame, text="删除预设", command=self._delete_selected_preset).grid(row=row, column=1, sticky=tk.W, padx=(340, 0))
+        ttk.Label(top, text="输出目录").grid(row=1, column=0, sticky=tk.W, pady=(8, 0))
+        ttk.Entry(top, textvariable=self.output_var).grid(row=1, column=1, sticky="ew", padx=(8, 8), pady=(8, 0))
+        pick_output_btn = ttk.Button(top, text="浏览", command=self._pick_output)
+        pick_output_btn.grid(row=1, column=2, pady=(8, 0))
 
-        row += 1
-        ttk.Label(frame, text="ASR 模型").grid(row=row, column=0, sticky=tk.W)
-        ttk.Entry(frame, textvariable=self.asr_model_var, width=20).grid(row=row, column=1, sticky=tk.W)
-        ttk.Label(frame, text="VLM 模型").grid(row=row, column=1, sticky=tk.E, padx=(0, 260))
-        ttk.Entry(frame, textvariable=self.vlm_model_var, width=34).grid(row=row, column=1, sticky=tk.E)
+        ttk.Label(top, text="预设").grid(row=2, column=0, sticky=tk.W, pady=(8, 0))
+        self.preset_combo = ttk.Combobox(top, textvariable=self.preset_var, values=self._builtin_presets, width=18)
+        self.preset_combo.grid(row=2, column=1, sticky=tk.W, padx=(8, 0), pady=(8, 0))
+        preset_btn_row = ttk.Frame(top)
+        preset_btn_row.grid(row=2, column=2, sticky=tk.E, pady=(8, 0))
+        load_preset_btn = ttk.Button(preset_btn_row, text="载入预设", command=self._load_selected_preset)
+        save_preset_btn = ttk.Button(preset_btn_row, text="另存预设", command=self._save_as_preset)
+        del_preset_btn = ttk.Button(preset_btn_row, text="删除预设", command=self._delete_selected_preset)
+        load_preset_btn.pack(side=tk.LEFT)
+        save_preset_btn.pack(side=tk.LEFT, padx=6)
+        del_preset_btn.pack(side=tk.LEFT)
 
-        row += 1
-        ttk.Label(frame, text="ASR 本地模型目录").grid(row=row, column=0, sticky=tk.W)
-        ttk.Entry(frame, textvariable=self.asr_model_path_var, width=92).grid(row=row, column=1, sticky=tk.W)
-        ttk.Button(frame, text="浏览", command=self._pick_model_dir).grid(row=row, column=2, padx=8)
+        layout_tools = ttk.Frame(top)
+        layout_tools.grid(row=3, column=0, columnspan=3, sticky=tk.W, pady=(8, 0))
+        self.toggle_left_btn = ttk.Button(layout_tools, text="收起ASR区", command=self._toggle_left_section)
+        self.toggle_right_btn = ttk.Button(layout_tools, text="收起模型区", command=self._toggle_right_section)
+        self.toggle_log_btn = ttk.Button(layout_tools, text="收起日志预览", command=self._toggle_log_preview)
+        top_log_btn = ttk.Button(layout_tools, text="打开日志窗口", command=self._open_log_window)
+        self.toggle_left_btn.pack(side=tk.LEFT)
+        self.toggle_right_btn.pack(side=tk.LEFT, padx=6)
+        self.toggle_log_btn.pack(side=tk.LEFT)
+        top_log_btn.pack(side=tk.LEFT, padx=6)
 
-        row += 1
-        ttk.Label(frame, text="HF 镜像地址").grid(row=row, column=0, sticky=tk.W)
-        ttk.Entry(frame, textvariable=self.hf_endpoint_var, width=30).grid(row=row, column=1, sticky=tk.W)
-        ttk.Label(frame, text="HTTP 代理").grid(row=row, column=1, sticky=tk.E, padx=(0, 260))
-        ttk.Entry(frame, textvariable=self.http_proxy_var, width=34).grid(row=row, column=1, sticky=tk.E)
+        middle = ttk.Frame(root_frame)
+        middle.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        middle.columnconfigure(0, weight=1)
+        middle.columnconfigure(1, weight=1)
 
-        row += 1
-        ttk.Label(frame, text="HTTPS 代理").grid(row=row, column=0, sticky=tk.W)
-        ttk.Entry(frame, textvariable=self.https_proxy_var, width=30).grid(row=row, column=1, sticky=tk.W)
-        ttk.Label(frame, text="HF 缓存目录").grid(row=row, column=1, sticky=tk.E, padx=(0, 260))
-        ttk.Entry(frame, textvariable=self.hf_home_var, width=34).grid(row=row, column=1, sticky=tk.E)
+        left = ttk.LabelFrame(middle, text="ASR 与流程", padding=10)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        left.columnconfigure(1, weight=1)
+        self.left_section_frame = left
 
-        row += 1
-        ttk.Checkbutton(frame, text="ASR 离线模式", variable=self.offline_var).grid(row=row, column=1, sticky=tk.W)
+        ttk.Label(left, text="ASR 模型").grid(row=0, column=0, sticky=tk.W)
+        ttk.Entry(left, textvariable=self.asr_model_var).grid(row=0, column=1, sticky="ew", padx=(8, 0))
 
-        row += 1
-        ttk.Label(frame, text="VLM 提供商").grid(row=row, column=0, sticky=tk.W)
+        ttk.Label(left, text="ASR 本地模型目录").grid(row=1, column=0, sticky=tk.W, pady=(8, 0))
+        ttk.Entry(left, textvariable=self.asr_model_path_var).grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
+        pick_model_btn = ttk.Button(left, text="浏览", command=self._pick_model_dir)
+        pick_model_btn.grid(row=1, column=2, padx=(8, 0), pady=(8, 0))
+
+        ttk.Label(left, text="HF 镜像地址").grid(row=2, column=0, sticky=tk.W, pady=(8, 0))
+        ttk.Entry(left, textvariable=self.hf_endpoint_var).grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
+
+        ttk.Label(left, text="HTTP 代理").grid(row=3, column=0, sticky=tk.W, pady=(8, 0))
+        ttk.Entry(left, textvariable=self.http_proxy_var).grid(row=3, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
+
+        ttk.Label(left, text="HTTPS 代理").grid(row=4, column=0, sticky=tk.W, pady=(8, 0))
+        ttk.Entry(left, textvariable=self.https_proxy_var).grid(row=4, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
+
+        ttk.Label(left, text="HF 缓存目录").grid(row=5, column=0, sticky=tk.W, pady=(8, 0))
+        ttk.Entry(left, textvariable=self.hf_home_var).grid(row=5, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
+
+        ttk.Checkbutton(left, text="ASR 离线模式", variable=self.offline_var).grid(row=6, column=1, sticky=tk.W, pady=(8, 0))
+
+        ttk.Label(left, text="截帧间隔(s)").grid(row=7, column=0, sticky=tk.W, pady=(8, 0))
+        ttk.Entry(left, textvariable=self.interval_var, width=10).grid(row=7, column=1, sticky=tk.W, padx=(8, 0), pady=(8, 0))
+
+        ttk.Label(left, text="上下文窗口").grid(row=8, column=0, sticky=tk.W, pady=(8, 0))
+        ttk.Entry(left, textvariable=self.context_window_var, width=10).grid(row=8, column=1, sticky=tk.W, padx=(8, 0), pady=(8, 0))
+
+        ttk.Label(left, text="API 超时(s)").grid(row=9, column=0, sticky=tk.W, pady=(8, 0))
+        ttk.Entry(left, textvariable=self.timeout_var, width=10).grid(row=9, column=1, sticky=tk.W, padx=(8, 0), pady=(8, 0))
+
+        ttk.Label(left, text="并发请求数").grid(row=10, column=0, sticky=tk.W, pady=(8, 0))
+        ttk.Entry(left, textvariable=self.concurrency_var, width=10).grid(row=10, column=1, sticky=tk.W, padx=(8, 0), pady=(8, 0))
+
+        ttk.Label(left, text="重试次数").grid(row=11, column=0, sticky=tk.W, pady=(8, 0))
+        ttk.Entry(left, textvariable=self.retry_var, width=10).grid(row=11, column=1, sticky=tk.W, padx=(8, 0), pady=(8, 0))
+
+        ttk.Checkbutton(left, text="附加音频摘要", variable=self.with_audio_summary_var).grid(row=12, column=1, sticky=tk.W, pady=(8, 0))
+        ttk.Checkbutton(left, text="启用 LLM 优化", variable=self.use_llm_polish_var).grid(row=13, column=1, sticky=tk.W, pady=(4, 0))
+
+        right = ttk.LabelFrame(middle, text="模型通道", padding=10)
+        right.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        right.columnconfigure(1, weight=1)
+        self.right_section_frame = right
+
+        ttk.Label(right, text="VLM 模型").grid(row=0, column=0, sticky=tk.W)
+        ttk.Entry(right, textvariable=self.vlm_model_var).grid(row=0, column=1, sticky="ew", padx=(8, 0))
+        ttk.Label(right, text="LLM 模型").grid(row=1, column=0, sticky=tk.W, pady=(8, 0))
+        ttk.Entry(right, textvariable=self.llm_model_var).grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
+
+        ttk.Label(right, text="VLM 提供商").grid(row=2, column=0, sticky=tk.W, pady=(8, 0))
         self.vlm_provider_combo = ttk.Combobox(
-            frame,
+            right,
             textvariable=self.vlm_provider_var,
             values=["siliconflow", "openai", "lmstudio", "custom"],
             width=18,
         )
-        self.vlm_provider_combo.grid(row=row, column=1, sticky=tk.W)
+        self.vlm_provider_combo.grid(row=2, column=1, sticky=tk.W, padx=(8, 0), pady=(8, 0))
         self.vlm_provider_combo.bind("<<ComboboxSelected>>", self._on_vlm_provider_changed)
-        ttk.Checkbutton(frame, text="VLM 禁用鉴权头(no-auth)", variable=self.vlm_no_auth_var).grid(row=row, column=1, sticky=tk.E)
 
-        row += 1
-        ttk.Label(frame, text="VLM API Base").grid(row=row, column=0, sticky=tk.W)
-        ttk.Entry(frame, textvariable=self.vlm_api_base_var, width=30).grid(row=row, column=1, sticky=tk.W)
-        ttk.Button(frame, text="测试 VLM 连接", command=self._test_vlm_connection).grid(row=row, column=2, padx=8)
-        ttk.Label(frame, text="VLM API Key Env").grid(row=row, column=1, sticky=tk.E, padx=(0, 260))
-        ttk.Entry(frame, textvariable=self.vlm_api_key_env_var, width=34).grid(row=row, column=1, sticky=tk.E)
+        ttk.Label(right, text="VLM API Base").grid(row=3, column=0, sticky=tk.W, pady=(8, 0))
+        ttk.Entry(right, textvariable=self.vlm_api_base_var).grid(row=3, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
+        ttk.Label(right, text="VLM API Key Env").grid(row=4, column=0, sticky=tk.W, pady=(8, 0))
+        ttk.Entry(right, textvariable=self.vlm_api_key_env_var).grid(row=4, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
+        ttk.Label(right, text="VLM API Key(可选)").grid(row=5, column=0, sticky=tk.W, pady=(8, 0))
+        ttk.Entry(right, textvariable=self.vlm_api_key_var, show="*").grid(row=5, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
+        ttk.Checkbutton(right, text="VLM 禁用鉴权头(no-auth)", variable=self.vlm_no_auth_var).grid(row=6, column=1, sticky=tk.W, pady=(4, 0))
 
-        row += 1
-        ttk.Label(frame, text="VLM API Key(可选)").grid(row=row, column=0, sticky=tk.W)
-        ttk.Entry(frame, textvariable=self.vlm_api_key_var, width=30, show="*").grid(row=row, column=1, sticky=tk.W)
-        ttk.Label(frame, text="LLM 提供商").grid(row=row, column=1, sticky=tk.E, padx=(0, 260))
+        ttk.Label(right, text="LLM 提供商").grid(row=7, column=0, sticky=tk.W, pady=(8, 0))
         self.llm_provider_combo = ttk.Combobox(
-            frame,
+            right,
             textvariable=self.llm_provider_var,
             values=["siliconflow", "openai", "lmstudio", "custom"],
             width=18,
         )
-        self.llm_provider_combo.grid(row=row, column=1, sticky=tk.E)
+        self.llm_provider_combo.grid(row=7, column=1, sticky=tk.W, padx=(8, 0), pady=(8, 0))
         self.llm_provider_combo.bind("<<ComboboxSelected>>", self._on_llm_provider_changed)
 
-        row += 1
-        ttk.Label(frame, text="LLM 模型").grid(row=row, column=0, sticky=tk.W)
-        ttk.Entry(frame, textvariable=self.llm_model_var, width=20).grid(row=row, column=1, sticky=tk.W)
-        ttk.Label(frame, text="截帧间隔(s)").grid(row=row, column=1, sticky=tk.E, padx=(0, 260))
-        ttk.Entry(frame, textvariable=self.interval_var, width=8).grid(row=row, column=1, sticky=tk.E)
+        ttk.Label(right, text="LLM API Base").grid(row=8, column=0, sticky=tk.W, pady=(8, 0))
+        ttk.Entry(right, textvariable=self.llm_api_base_var).grid(row=8, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
+        ttk.Label(right, text="LLM API Key Env").grid(row=9, column=0, sticky=tk.W, pady=(8, 0))
+        ttk.Entry(right, textvariable=self.llm_api_key_env_var).grid(row=9, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
+        ttk.Label(right, text="LLM API Key(可选)").grid(row=10, column=0, sticky=tk.W, pady=(8, 0))
+        ttk.Entry(right, textvariable=self.llm_api_key_var, show="*").grid(row=10, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
+        ttk.Checkbutton(right, text="LLM 禁用鉴权头(no-auth)", variable=self.llm_no_auth_var).grid(row=11, column=1, sticky=tk.W, pady=(4, 0))
 
-        row += 1
-        ttk.Label(frame, text="LLM API Base").grid(row=row, column=0, sticky=tk.W)
-        ttk.Entry(frame, textvariable=self.llm_api_base_var, width=30).grid(row=row, column=1, sticky=tk.W)
-        ttk.Button(frame, text="测试 LLM 连接", command=self._test_llm_connection).grid(row=row, column=2, padx=8)
-        ttk.Label(frame, text="LLM API Key Env").grid(row=row, column=1, sticky=tk.E, padx=(0, 260))
-        ttk.Entry(frame, textvariable=self.llm_api_key_env_var, width=34).grid(row=row, column=1, sticky=tk.E)
+        test_row = ttk.Frame(right)
+        test_row.grid(row=12, column=1, sticky=tk.W, pady=(10, 0))
+        test_vlm_btn = ttk.Button(test_row, text="测试 VLM 连接", command=self._test_vlm_connection)
+        test_llm_btn = ttk.Button(test_row, text="测试 LLM 连接", command=self._test_llm_connection)
+        test_vlm_btn.pack(side=tk.LEFT)
+        test_llm_btn.pack(side=tk.LEFT, padx=6)
 
-        row += 1
-        ttk.Label(frame, text="LLM API Key(可选)").grid(row=row, column=0, sticky=tk.W)
-        ttk.Entry(frame, textvariable=self.llm_api_key_var, width=30, show="*").grid(row=row, column=1, sticky=tk.W)
-        ttk.Checkbutton(frame, text="LLM 禁用鉴权头(no-auth)", variable=self.llm_no_auth_var).grid(row=row, column=1, sticky=tk.E)
+        actions = ttk.LabelFrame(root_frame, text="执行控制", padding=10)
+        actions.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        btn_row = ttk.Frame(actions)
+        btn_row.pack(anchor=tk.W)
+        run_all_btn = ttk.Button(btn_row, text="运行全流程", command=self._run_all)
+        run_p1_btn = ttk.Button(btn_row, text="仅 Phase1", command=self._run_phase1)
+        run_p2_btn = ttk.Button(btn_row, text="仅 Phase2", command=self._run_phase2)
+        run_p3_btn = ttk.Button(btn_row, text="仅 Phase3", command=self._run_phase3)
+        run_p4_btn = ttk.Button(btn_row, text="仅 Phase4", command=self._run_phase4)
+        stop_btn = ttk.Button(btn_row, text="停止", command=self._stop)
+        save_cfg_btn = ttk.Button(btn_row, text="保存当前配置", command=self._save_current_config)
+        run_all_btn.pack(side=tk.LEFT)
+        run_p1_btn.pack(side=tk.LEFT, padx=6)
+        run_p2_btn.pack(side=tk.LEFT)
+        run_p3_btn.pack(side=tk.LEFT, padx=6)
+        run_p4_btn.pack(side=tk.LEFT)
+        stop_btn.pack(side=tk.LEFT, padx=6)
+        save_cfg_btn.pack(side=tk.LEFT)
 
-        row += 1
-        ttk.Label(frame, text="上下文窗口").grid(row=row, column=0, sticky=tk.W)
-        ttk.Entry(frame, textvariable=self.context_window_var, width=8).grid(row=row, column=1, sticky=tk.W)
-        ttk.Label(frame, text="API 超时(s)").grid(row=row, column=1, sticky=tk.E, padx=(0, 260))
-        ttk.Entry(frame, textvariable=self.timeout_var, width=8).grid(row=row, column=1, sticky=tk.E)
+        self.control_widgets.extend(
+            [
+                pick_input_btn,
+                pick_output_btn,
+                load_preset_btn,
+                save_preset_btn,
+                del_preset_btn,
+                pick_model_btn,
+                test_vlm_btn,
+                test_llm_btn,
+                run_all_btn,
+                run_p1_btn,
+                run_p2_btn,
+                run_p3_btn,
+                run_p4_btn,
+                save_cfg_btn,
+            ]
+        )
 
-        row += 1
-        ttk.Label(frame, text="并发请求数").grid(row=row, column=0, sticky=tk.W)
-        ttk.Entry(frame, textvariable=self.concurrency_var, width=8).grid(row=row, column=1, sticky=tk.W)
-        ttk.Label(frame, text="重试次数").grid(row=row, column=1, sticky=tk.E, padx=(0, 260))
-        ttk.Entry(frame, textvariable=self.retry_var, width=8).grid(row=row, column=1, sticky=tk.E)
-
-        row += 1
-        ttk.Checkbutton(frame, text="附加音频摘要", variable=self.with_audio_summary_var).grid(row=row, column=1, sticky=tk.E, padx=(0, 165))
-        ttk.Checkbutton(frame, text="启用 LLM 优化", variable=self.use_llm_polish_var).grid(row=row, column=1, sticky=tk.E)
-
-        row += 1
-        btn_row = ttk.Frame(frame)
-        btn_row.grid(row=row, column=0, columnspan=3, pady=(10, 0), sticky=tk.W)
-        ttk.Button(btn_row, text="运行全流程", command=self._run_all).pack(side=tk.LEFT)
-        ttk.Button(btn_row, text="仅 Phase1", command=self._run_phase1).pack(side=tk.LEFT, padx=8)
-        ttk.Button(btn_row, text="仅 Phase2", command=self._run_phase2).pack(side=tk.LEFT)
-        ttk.Button(btn_row, text="仅 Phase3", command=self._run_phase3).pack(side=tk.LEFT, padx=8)
-        ttk.Button(btn_row, text="仅 Phase4", command=self._run_phase4).pack(side=tk.LEFT)
-        ttk.Button(btn_row, text="停止", command=self._stop).pack(side=tk.LEFT, padx=8)
-        ttk.Button(btn_row, text="保存当前配置", command=self._save_current_config).pack(side=tk.LEFT)
+        status_frame = ttk.Frame(root_frame, padding=(0, 8, 0, 0))
+        status_frame.grid(row=3, column=0, sticky="ew")
+        ttk.Label(status_frame, text="状态:").pack(side=tk.LEFT)
+        ttk.Label(status_frame, textvariable=self.status_var).pack(side=tk.LEFT, padx=(6, 0))
 
     def _build_log_view(self) -> None:
         frame = ttk.Frame(self.root, padding=(12, 0, 12, 12))
         frame.pack(fill=tk.BOTH, expand=True)
 
-        self.log_text = tk.Text(frame, wrap=tk.WORD, height=28)
+        tools = ttk.Frame(frame)
+        tools.pack(fill=tk.X, pady=(0, 6))
+        ttk.Button(tools, text="弹出日志窗口", command=self._open_log_window).pack(side=tk.LEFT)
+        ttk.Button(tools, text="清空日志", command=self._clear_logs).pack(side=tk.LEFT, padx=6)
+
+        self.log_preview_frame = ttk.Frame(frame)
+        self.log_preview_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Keep a compact in-panel preview; full logs are available in popup window.
+        self.log_text = tk.Text(self.log_preview_frame, wrap=tk.WORD, height=8)
         self.log_text.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
-        scrollbar = ttk.Scrollbar(frame, command=self.log_text.yview)
+        scrollbar = ttk.Scrollbar(self.log_preview_frame, command=self.log_text.yview)
         scrollbar.pack(fill=tk.Y, side=tk.RIGHT)
         self.log_text.config(yscrollcommand=scrollbar.set)
+
+    def _toggle_left_section(self) -> None:
+        if self.left_section_frame is None or self.toggle_left_btn is None:
+            return
+        if self.left_section_frame.winfo_ismapped():
+            self.left_section_frame.grid_remove()
+            self.toggle_left_btn.configure(text="展开ASR区")
+        else:
+            self.left_section_frame.grid()
+            self.toggle_left_btn.configure(text="收起ASR区")
+
+    def _toggle_right_section(self) -> None:
+        if self.right_section_frame is None or self.toggle_right_btn is None:
+            return
+        if self.right_section_frame.winfo_ismapped():
+            self.right_section_frame.grid_remove()
+            self.toggle_right_btn.configure(text="展开模型区")
+        else:
+            self.right_section_frame.grid()
+            self.toggle_right_btn.configure(text="收起模型区")
+
+    def _toggle_log_preview(self) -> None:
+        if self.log_preview_frame is None or self.toggle_log_btn is None:
+            return
+        if self.log_preview_frame.winfo_ismapped():
+            self.log_preview_frame.pack_forget()
+            self.toggle_log_btn.configure(text="展开日志预览")
+        else:
+            self.log_preview_frame.pack(fill=tk.BOTH, expand=True)
+            self.toggle_log_btn.configure(text="收起日志预览")
+
+    def _open_log_window(self) -> None:
+        if self.log_window is not None and self.log_window.winfo_exists():
+            self.log_window.deiconify()
+            self.log_window.lift()
+            return
+
+        window = tk.Toplevel(self.root)
+        window.title("VideoSummary 日志")
+        window.geometry("1100x620")
+
+        text = tk.Text(window, wrap=tk.WORD)
+        text.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
+        scrollbar = ttk.Scrollbar(window, command=text.yview)
+        scrollbar.pack(fill=tk.Y, side=tk.RIGHT)
+        text.config(yscrollcommand=scrollbar.set)
+
+        if self.log_history:
+            text.insert(tk.END, "\n".join(self.log_history) + "\n")
+            text.see(tk.END)
+
+        def _on_close() -> None:
+            self.log_window = None
+            self.log_popup_text = None
+            window.destroy()
+
+        window.protocol("WM_DELETE_WINDOW", _on_close)
+        self.log_window = window
+        self.log_popup_text = text
+
+    def _clear_logs(self) -> None:
+        self.log_history.clear()
+        self.log_text.delete("1.0", tk.END)
+        if self.log_popup_text is not None:
+            self.log_popup_text.delete("1.0", tk.END)
 
     def _pick_input(self) -> None:
         path = filedialog.askopenfilename(title="选择视频文件")
@@ -316,8 +464,14 @@ class VideoSummaryPanel:
             self.asr_model_path_var.set(path)
 
     def _append_log(self, line: str) -> None:
+        self.log_history.append(line)
+        if len(self.log_history) > 5000:
+            self.log_history = self.log_history[-5000:]
         self.log_text.insert(tk.END, line + "\n")
         self.log_text.see(tk.END)
+        if self.log_popup_text is not None:
+            self.log_popup_text.insert(tk.END, line + "\n")
+            self.log_popup_text.see(tk.END)
 
     def _drain_log_queue(self) -> None:
         while True:
@@ -325,6 +479,9 @@ class VideoSummaryPanel:
                 line = self.log_queue.get_nowait()
             except queue.Empty:
                 break
+            if line == "__GUI_STATE_IDLE__":
+                self._set_running_state(False, "空闲")
+                continue
             self._append_log(line)
         self.root.after(200, self._drain_log_queue)
 
@@ -380,6 +537,7 @@ class VideoSummaryPanel:
 
         self._append_log("=" * 80)
         self._append_log(f"开始测试 {channel.upper()} 连接: provider={provider}, base={base_url}, model={model}")
+        self.status_var.set(f"测试中: {channel.upper()}")
 
         def _worker() -> None:
             logs = run_connection_probe(
@@ -392,6 +550,7 @@ class VideoSummaryPanel:
             )
             for line in logs:
                 self.log_queue.put(line)
+            self.log_queue.put("__GUI_STATE_IDLE__")
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -696,6 +855,7 @@ class VideoSummaryPanel:
 
     def _start_command(self, cmd: list[str], title: str) -> None:
         self._save_settings()
+        self._set_running_state(True, f"运行中: {title}")
 
         self._append_log("=" * 80)
         self._append_log(f"开始执行[{title}]: " + " ".join(cmd))
@@ -726,8 +886,18 @@ class VideoSummaryPanel:
             code = self.process.wait()
             self.log_queue.put(f"任务结束，退出码: {code}")
             self.process = None
+            self.log_queue.put("__GUI_STATE_IDLE__")
 
         threading.Thread(target=_worker, daemon=True).start()
+
+    def _set_running_state(self, running: bool, status_text: str | None = None) -> None:
+        for widget in self.control_widgets:
+            try:
+                widget.configure(state=("disabled" if running else "normal"))
+            except Exception:
+                continue
+        if status_text is not None:
+            self.status_var.set(status_text)
 
     def _run_all(self) -> None:
         if self.process is not None and self.process.poll() is None:
@@ -799,6 +969,7 @@ class VideoSummaryPanel:
             return
         self.process.terminate()
         self._append_log("已请求停止当前任务。")
+        self.status_var.set("停止中...")
 
 
 def main() -> None:

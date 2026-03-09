@@ -29,6 +29,8 @@ Improve readability and interaction efficiency without changing CLI behavior.
 - Disable all run buttons while a process is active.
 - Highlight missing prerequisites for phase-only runs.
 - Add lightweight status badge for VLM/LLM connectivity result.
+- Provide quick collapse/expand controls for `ASR区` / `模型区` / `日志预览` to support small-height windows.
+- Keep a top-level `打开日志窗口` shortcut always visible, independent of preview area visibility.
 
 ## Style Tokens (Tkinter/ttk)
 - Spacing scale: 4 / 8 / 12 / 16 px.
