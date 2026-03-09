@@ -1,25 +1,21 @@
 from __future__ import annotations
 
-import json
 import os
 import queue
 import subprocess
 import sys
 import threading
 import tkinter as tk
-import urllib.error
-import urllib.request
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
+
+from videosummary.gui_mod.commands import pipeline_paths, runtime_api_key_env
+from videosummary.gui_mod.config_store import default_base_for_provider, load_settings, save_settings, sync_base_url
+from videosummary.gui_mod.connectivity import run_connection_probe
 
 
 class VideoSummaryPanel:
     BUILTIN_PRESETS = ["default", "game", "speech"]
-    PROVIDER_DEFAULT_BASE = {
-        "siliconflow": "https://api.siliconflow.cn/v1",
-        "openai": "https://api.openai.com/v1",
-        "lmstudio": "http://127.0.0.1:1234/v1",
-    }
 
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -147,33 +143,14 @@ class VideoSummaryPanel:
         self.with_audio_summary_var.set(bool(state.get("with_audio_summary", self.with_audio_summary_var.get())))
 
     def _load_settings(self) -> None:
-        path = self._settings_path
-        if not path.exists():
-            return
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            return
-
-        custom = payload.get("custom_presets")
-        if isinstance(custom, dict):
-            self.custom_presets = {
-                str(name): preset
-                for name, preset in custom.items()
-                if isinstance(preset, dict)
-            }
-        last = payload.get("last_config")
-        if isinstance(last, dict):
+        last, custom = load_settings(self._settings_path)
+        if custom:
+            self.custom_presets = custom
+        if last:
             self._apply_state(last, include_input_output=True)
 
     def _save_settings(self) -> None:
-        path = self._settings_path
-        payload = {
-            "version": 1,
-            "last_config": self._collect_state(),
-            "custom_presets": self.custom_presets,
-        }
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        save_settings(self._settings_path, self._collect_state(), self.custom_presets)
 
     def _on_close(self) -> None:
         try:
@@ -352,10 +329,7 @@ class VideoSummaryPanel:
         self.root.after(200, self._drain_log_queue)
 
     def _provider_default_base(self, provider: str) -> str:
-        return self.PROVIDER_DEFAULT_BASE.get(provider.strip(), "")
-
-    def _known_default_bases(self) -> set[str]:
-        return set(self.PROVIDER_DEFAULT_BASE.values())
+        return default_base_for_provider(provider)
 
     def _sync_channel_base_url(self, channel: str, *, force: bool) -> None:
         if channel == "vlm":
@@ -368,10 +342,7 @@ class VideoSummaryPanel:
         default_base = self._provider_default_base(provider)
         if not default_base:
             return
-
-        current = base_var.get().strip()
-        if force or (not current) or (current in self._known_default_bases()):
-            base_var.set(default_base)
+        base_var.set(sync_base_url(provider, base_var.get(), force=force))
 
     def _on_vlm_provider_changed(self, _event: object | None = None) -> None:
         self._sync_channel_base_url("vlm", force=True)
@@ -398,25 +369,10 @@ class VideoSummaryPanel:
         runtime_key = key_text or os.environ.get(api_key_env, "")
         return api_base, runtime_key, no_auth, model, provider
 
-    def _json_post(self, url: str, payload: dict[str, object], headers: dict[str, str], timeout: float) -> dict[str, object]:
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        request = urllib.request.Request(url, data=body, headers=headers, method="POST")
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            content = response.read().decode("utf-8", errors="replace")
-        return json.loads(content) if content else {}
-
-    def _json_get(self, url: str, headers: dict[str, str], timeout: float) -> dict[str, object]:
-        request = urllib.request.Request(url, headers=headers, method="GET")
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            content = response.read().decode("utf-8", errors="replace")
-        return json.loads(content) if content else {}
-
     def _run_connection_test(self, channel: str) -> None:
         api_base, runtime_key, no_auth, model, provider = self._resolve_channel_runtime_key(channel)
         timeout = float(self.timeout_var.get().strip() or "120")
         base_url = api_base.rstrip("/")
-        models_url = base_url + "/models"
-        chat_url = base_url + "/chat/completions"
 
         if not base_url:
             messagebox.showerror("参数错误", f"{channel.upper()} API Base 不能为空")
@@ -426,57 +382,16 @@ class VideoSummaryPanel:
         self._append_log(f"开始测试 {channel.upper()} 连接: provider={provider}, base={base_url}, model={model}")
 
         def _worker() -> None:
-            headers = {"Content-Type": "application/json"}
-            if not no_auth:
-                if not runtime_key:
-                    self.log_queue.put(
-                        f"{channel.upper()} 连接测试失败: 需要鉴权但未提供 API Key（可填 API Key 或设置环境变量）"
-                    )
-                    return
-                headers["Authorization"] = f"Bearer {runtime_key}"
-
-            try:
-                models_data = self._json_get(models_url, headers=headers, timeout=timeout)
-                model_ids: list[str] = []
-                for row in models_data.get("data", []) if isinstance(models_data, dict) else []:
-                    model_id = str((row or {}).get("id", "")).strip()
-                    if model_id:
-                        model_ids.append(model_id)
-                preview = ", ".join(model_ids[:5]) if model_ids else "(空)"
-                self.log_queue.put(f"{channel.upper()} /v1/models 成功，可用模型示例: {preview}")
-            except urllib.error.HTTPError as exc:
-                body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
-                self.log_queue.put(f"{channel.upper()} /v1/models 失败: HTTP {exc.code} {body[:200]}")
-                return
-            except Exception as exc:
-                self.log_queue.put(f"{channel.upper()} /v1/models 失败: {exc}")
-                return
-
-            try:
-                payload = {
-                    "model": model,
-                    "temperature": 0,
-                    "messages": [
-                        {"role": "system", "content": "You are a connectivity test assistant."},
-                        {"role": "user", "content": "Reply with OK only."},
-                    ],
-                }
-                result = self._json_post(chat_url, payload=payload, headers=headers, timeout=timeout)
-                choices = result.get("choices", []) if isinstance(result, dict) else []
-                preview = ""
-                if choices:
-                    message = (choices[0] or {}).get("message", {})
-                    preview = str(message.get("content", "")).strip().replace("\n", " ")[:80]
-                self.log_queue.put(
-                    f"{channel.upper()} 最小 chat 请求成功，返回片段: {preview or '(空返回但请求成功)'}"
-                )
-            except urllib.error.HTTPError as exc:
-                body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
-                self.log_queue.put(
-                    f"{channel.upper()} 最小 chat 请求失败: HTTP {exc.code} {body[:260]}"
-                )
-            except Exception as exc:
-                self.log_queue.put(f"{channel.upper()} 最小 chat 请求失败: {exc}")
+            logs = run_connection_probe(
+                channel=channel,
+                api_base=base_url,
+                model=model,
+                timeout_seconds=timeout,
+                api_key=runtime_key,
+                send_auth_header=not no_auth,
+            )
+            for line in logs:
+                self.log_queue.put(line)
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -546,28 +461,7 @@ class VideoSummaryPanel:
         self._append_log(f"已删除自定义预设: {name}")
 
     def _pipeline_paths(self) -> dict[str, Path]:
-        input_path = self.input_var.get().strip()
-        if not input_path:
-            raise ValueError("请先选择输入视频")
-        input_video = Path(input_path)
-        if not input_video.exists():
-            raise ValueError(f"输入文件不存在: {input_path}")
-
-        output_root = Path(self.output_var.get().strip() or "outputs")
-        video_stem = input_video.stem
-        phase1_dir = output_root / video_stem / "phase1"
-        phase2_dir = output_root / video_stem / "phase2_fixed"
-        phase3_dir = phase2_dir / "phase3_vlm"
-        phase4_dir = phase3_dir / "phase4_summary"
-        return {
-            "input": input_video,
-            "phase1_dir": phase1_dir,
-            "phase2_dir": phase2_dir,
-            "phase3_dir": phase3_dir,
-            "phase4_dir": phase4_dir,
-            "phase2_payload_jsonl": phase2_dir / "vlm_payload.jsonl",
-            "phase3_jsonl": phase3_dir / "visual_analysis.jsonl",
-        }
+        return pipeline_paths(self.input_var.get().strip(), self.output_var.get().strip() or "outputs")
 
     def _phase1_flags(self) -> list[str]:
         flags = [
@@ -791,16 +685,14 @@ class VideoSummaryPanel:
         return cmd
 
     def _runtime_api_key_env(self) -> dict[str, str]:
-        env: dict[str, str] = {}
-        vlm_key = self.vlm_api_key_var.get().strip()
-        llm_key = self.llm_api_key_var.get().strip()
-        vlm_env = self.vlm_api_key_env_var.get().strip() or "SILICONFLOW_API_KEY"
-        llm_env = self.llm_api_key_env_var.get().strip() or "SILICONFLOW_API_KEY"
-        if vlm_key:
-            env[vlm_env] = vlm_key
-        if llm_key:
-            env[llm_env] = llm_key
-        return env
+        return runtime_api_key_env(
+            {
+                "vlm_api_key": self.vlm_api_key_var.get().strip(),
+                "llm_api_key": self.llm_api_key_var.get().strip(),
+                "vlm_api_key_env": self.vlm_api_key_env_var.get().strip(),
+                "llm_api_key_env": self.llm_api_key_env_var.get().strip(),
+            }
+        )
 
     def _start_command(self, cmd: list[str], title: str) -> None:
         self._save_settings()
