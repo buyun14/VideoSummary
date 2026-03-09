@@ -149,6 +149,12 @@ chcp 65001
 
 基于第二阶段 `vlm_payload.jsonl` 调用 OpenAI 兼容接口（如 SiliconFlow）进行逐帧分析。
 
+支持的 provider 预设：
+- `siliconflow`（默认）
+- `openai`
+- `lmstudio`（本地 `http://127.0.0.1:1234/v1`，默认关闭鉴权头）
+- `custom`（你自行指定 `--api-base` 和鉴权策略）
+
 先设置环境变量（推荐，不把 key 写进命令）：
 
 ```powershell
@@ -161,6 +167,12 @@ $env:SILICONFLOW_API_KEY="<your_api_key>"
 
 ```powershell
 .\.venv\Scripts\python -m videosummary.cli phase3-vlm --vlm-payload-jsonl "outputs/屏幕录制 2025-04-17 193845/phase2_fixed/vlm_payload.jsonl" --api-base "https://api.siliconflow.cn/v1" --model "deepseek-ai/DeepSeek-OCR" --max-items 3
+```
+
+LM Studio 示例（本地 OpenAI 兼容接口）：
+
+```powershell
+.\.venv\Scripts\python -m videosummary.cli --verbose phase3-vlm --provider lmstudio --no-auth --model "qwen2.5-vl-7b-instruct" --vlm-payload-jsonl "outputs/屏幕录制 2025-04-17 193845/phase2_fixed/vlm_payload.jsonl"
 ```
 
 说明：`deepseek-ai/DeepSeek-OCR` 更偏 OCR/文档抽取，若用于“画面理解+解释”可能返回过短。建议在第三阶段优先选用通用视觉对话模型，OCR 模型作为补充通道。
@@ -212,6 +224,12 @@ $env:SILICONFLOW_API_KEY="<your_api_key>"
 
 ```powershell
 .\.venv\Scripts\python -m videosummary.cli --verbose --log-file "logs/game_run.log" run-all --input "data_test/Base Profile 2025.07.09 - 17.20.58.03.mp4" --preset game --with-audio-summary --use-llm-polish
+```
+
+使用 LM Studio 一键全流程：
+
+```powershell
+.\.venv\Scripts\python -m videosummary.cli --verbose run-all --provider lmstudio --no-auth --input "data_test/Base Profile 2025.07.09 - 17.20.58.03.mp4" --preset game --with-audio-summary --use-llm-polish --vlm-model "qwen2.5-vl-7b-instruct" --llm-model "qwen2.5-7b-instruct"
 ```
 
 可追加参数：

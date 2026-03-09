@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "last_config": {
+    "input": "E:/ProjectCollection/2026_3/VideoSummary/data_test/东南大学程光：加密流量测量与分析.mp4",
+    "output": "outputs",
+    "preset": "default",
+    "asr_model": "small",
+    "asr_model_path": "",
+    "hf_endpoint": "https://hf-mirror.com",
+    "http_proxy": "",
+    "https_proxy": "",
+    "hf_home": "",
+    "offline": false,
+    "vlm_model": "qwen3.5-4b",
+    "provider": "lmstudio",
+    "no_auth": true,
+    "llm_model": "qwen3.5-4b",
+    "interval_seconds": "30",
+    "context_window": "1",
+    "timeout_seconds": "120",
+    "concurrency": "1",
+    "max_retries": "1",
+    "use_llm_polish": true,
+    "with_audio_summary": true
+  },
+  "custom_presets": {}
+}

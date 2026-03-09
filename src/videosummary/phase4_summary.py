@@ -22,6 +22,7 @@ class Phase4SummaryConfig:
     api_base: str = "https://api.siliconflow.cn/v1"
     api_key: str | None = None
     api_key_env: str = "SILICONFLOW_API_KEY"
+    send_auth_header: bool = True
     llm_model: str = "Qwen/Qwen3-8B"
     timeout_seconds: float = 120.0
     max_key_moments: int = 12
@@ -82,7 +83,8 @@ def _build_transcript_excerpt(segments: list[dict[str, Any]], max_chars: int = 1
 
 def _llm_chat(
     api_base: str,
-    api_key: str,
+    api_key: str | None,
+    send_auth_header: bool,
     model: str,
     timeout_seconds: float,
     system_prompt: str,
@@ -98,12 +100,15 @@ def _llm_chat(
         ],
     }
     with httpx.Client(timeout=timeout_seconds) as client:
+        headers = {
+            "Content-Type": "application/json",
+        }
+        if send_auth_header:
+            headers["Authorization"] = f"Bearer {api_key or ''}"
+
         response = client.post(
             endpoint,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
+            headers=headers,
             json=payload,
         )
         response.raise_for_status()
@@ -294,9 +299,11 @@ def run_phase4_summary(config: Phase4SummaryConfig) -> Path:
     transcript_excerpt = _build_transcript_excerpt(segments)
 
     api_key = config.api_key or os.getenv(config.api_key_env)
-    llm_available = bool(config.use_llm_polish and api_key)
-    if config.use_llm_polish and not api_key:
+    llm_available = bool(config.use_llm_polish and (api_key or not config.send_auth_header))
+    if config.use_llm_polish and config.send_auth_header and not api_key:
         log_phase(phase, f"未检测到 API Key ({config.api_key_env})，自动回退为无模型润色模式")
+    if config.use_llm_polish and not config.send_auth_header:
+        log_phase(phase, "已禁用 Authorization 请求头（适配本地/无鉴权 OpenAI 兼容接口）")
 
     polished_audio_summary: str | None = None
     audio_error: str | None = None
@@ -313,7 +320,8 @@ def run_phase4_summary(config: Phase4SummaryConfig) -> Path:
             try:
                 polished_audio_summary = _llm_chat(
                     api_base=config.api_base,
-                    api_key=str(api_key),
+                    api_key=api_key,
+                    send_auth_header=config.send_auth_header,
                     model=config.llm_model,
                     timeout_seconds=config.timeout_seconds,
                     system_prompt="You are a precise Chinese meeting/video summarizer.",
@@ -344,7 +352,8 @@ def run_phase4_summary(config: Phase4SummaryConfig) -> Path:
             try:
                 final_summary_md = _llm_chat(
                     api_base=config.api_base,
-                    api_key=str(api_key),
+                    api_key=api_key,
+                    send_auth_header=config.send_auth_header,
                     model=config.llm_model,
                     timeout_seconds=config.timeout_seconds,
                     system_prompt="You are a rigorous Chinese video summarization assistant.",
@@ -383,6 +392,7 @@ def run_phase4_summary(config: Phase4SummaryConfig) -> Path:
             "api_base": config.api_base,
             "llm_model": config.llm_model,
             "api_key_env": config.api_key_env,
+            "send_auth_header": config.send_auth_header,
             "timeout_seconds": config.timeout_seconds,
             "max_key_moments": config.max_key_moments,
         },

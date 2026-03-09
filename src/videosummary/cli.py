@@ -53,6 +53,29 @@ def _apply_phase4_preset(args: argparse.Namespace) -> None:
         args.max_key_moments = 10
 
 
+def _apply_provider_defaults(args: argparse.Namespace) -> None:
+    provider = getattr(args, "provider", "siliconflow")
+    if not hasattr(args, "api_base"):
+        return
+
+    current_base = str(getattr(args, "api_base", "")).strip()
+    current_key_env = str(getattr(args, "api_key_env", "")).strip() if hasattr(args, "api_key_env") else ""
+
+    if provider == "openai":
+        if current_base == "https://api.siliconflow.cn/v1":
+            args.api_base = "https://api.openai.com/v1"
+        if current_key_env == "SILICONFLOW_API_KEY":
+            args.api_key_env = "OPENAI_API_KEY"
+    elif provider == "lmstudio":
+        if current_base == "https://api.siliconflow.cn/v1":
+            args.api_base = "http://127.0.0.1:1234/v1"
+        if hasattr(args, "send_auth_header") and args.send_auth_header is True:
+            args.send_auth_header = False
+    elif provider == "custom":
+        # Respect user-specified api_base/api_key_env for custom providers.
+        pass
+
+
 def _load_dotenv_if_present(dotenv_path: Path = Path(".env")) -> None:
     if not dotenv_path.exists():
         return
@@ -168,6 +191,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     phase3_vlm.add_argument("--api-base", default="https://api.siliconflow.cn/v1", help="API base URL")
     phase3_vlm.add_argument(
+        "--provider",
+        default="siliconflow",
+        choices=["siliconflow", "openai", "lmstudio", "custom"],
+        help="OpenAI-compatible provider preset",
+    )
+    phase3_vlm.add_argument(
         "--preset",
         default="default",
         choices=["default", "game", "speech"],
@@ -180,6 +209,13 @@ def build_parser() -> argparse.ArgumentParser:
         default="SILICONFLOW_API_KEY",
         help="Environment variable that stores API key",
     )
+    phase3_vlm.add_argument(
+        "--no-auth",
+        action="store_false",
+        dest="send_auth_header",
+        help="Disable Authorization header (for local LM Studio, etc.)",
+    )
+    phase3_vlm.set_defaults(send_auth_header=True)
     phase3_vlm.add_argument(
         "--without-image",
         action="store_true",
@@ -229,6 +265,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use LLM to polish audio summary and final summary",
     )
     phase4_summary.add_argument("--api-base", default="https://api.siliconflow.cn/v1", help="API base URL")
+    phase4_summary.add_argument(
+        "--provider",
+        default="siliconflow",
+        choices=["siliconflow", "openai", "lmstudio", "custom"],
+        help="OpenAI-compatible provider preset",
+    )
     phase4_summary.add_argument("--llm-model", default="Qwen/Qwen3-8B", help="Text model name")
     phase4_summary.add_argument("--api-key", default=None, help="API key (prefer environment variable)")
     phase4_summary.add_argument(
@@ -236,6 +278,13 @@ def build_parser() -> argparse.ArgumentParser:
         default="SILICONFLOW_API_KEY",
         help="Environment variable that stores API key",
     )
+    phase4_summary.add_argument(
+        "--no-auth",
+        action="store_false",
+        dest="send_auth_header",
+        help="Disable Authorization header (for local LM Studio, etc.)",
+    )
+    phase4_summary.set_defaults(send_auth_header=True)
     phase4_summary.add_argument("--timeout-seconds", type=float, default=120.0, help="HTTP timeout")
     phase4_summary.add_argument(
         "--max-key-moments",
@@ -261,12 +310,25 @@ def build_parser() -> argparse.ArgumentParser:
     run_all.add_argument("--context-window", type=int, default=1, help="Phase2 context window")
     run_all.add_argument("--with-audio-summary", action="store_true", help="Attach phase1 summary to phase2 payload")
     run_all.add_argument("--api-base", default="https://api.siliconflow.cn/v1", help="API base URL")
+    run_all.add_argument(
+        "--provider",
+        default="siliconflow",
+        choices=["siliconflow", "openai", "lmstudio", "custom"],
+        help="OpenAI-compatible provider preset",
+    )
     run_all.add_argument("--vlm-model", default="deepseek-ai/DeepSeek-OCR", help="Phase3 VLM model")
     run_all.add_argument("--temperature", type=float, default=0.2, help="Phase3 sampling temperature")
     run_all.add_argument("--concurrency", type=int, default=3, help="Phase3 concurrent API requests")
     run_all.add_argument("--llm-model", default="Qwen/Qwen3-8B", help="Phase4 text model")
     run_all.add_argument("--api-key", default=None, help="API key")
     run_all.add_argument("--api-key-env", default="SILICONFLOW_API_KEY", help="API key env var")
+    run_all.add_argument(
+        "--no-auth",
+        action="store_false",
+        dest="send_auth_header",
+        help="Disable Authorization header (for local LM Studio, etc.)",
+    )
+    run_all.set_defaults(send_auth_header=True)
     run_all.add_argument("--timeout-seconds", type=float, default=120.0, help="HTTP timeout")
     run_all.add_argument("--max-retries", type=int, default=1, help="Phase3 retries")
     run_all.add_argument("--retry-backoff-seconds", type=float, default=2.0, help="Phase3 retry backoff")
@@ -337,6 +399,7 @@ def main() -> None:
         return
 
     if args.command == "phase3-vlm":
+        _apply_provider_defaults(args)
         _apply_phase3_preset(args)
         payload_jsonl = Path(args.vlm_payload_jsonl).resolve()
         if args.output:
@@ -352,6 +415,7 @@ def main() -> None:
                 model=args.model,
                 api_key=args.api_key,
                 api_key_env=args.api_key_env,
+                send_auth_header=args.send_auth_header,
                 include_image=not args.without_image,
                 temperature=args.temperature,
                 timeout_seconds=args.timeout_seconds,
@@ -365,6 +429,7 @@ def main() -> None:
         return
 
     if args.command == "phase4-summary":
+        _apply_provider_defaults(args)
         _apply_phase4_preset(args)
         phase1_dir = Path(args.phase1_dir).resolve()
         phase3_jsonl = Path(args.phase3_jsonl).resolve()
@@ -387,6 +452,7 @@ def main() -> None:
                 llm_model=args.llm_model,
                 api_key=args.api_key,
                 api_key_env=args.api_key_env,
+                send_auth_header=args.send_auth_header,
                 timeout_seconds=args.timeout_seconds,
                 max_key_moments=args.max_key_moments,
             )
@@ -395,6 +461,7 @@ def main() -> None:
         return
 
     if args.command == "run-all":
+        _apply_provider_defaults(args)
         _apply_phase2_preset(args)
         _apply_phase3_preset(args)
         _apply_phase4_preset(args)
@@ -436,6 +503,7 @@ def main() -> None:
                 model=args.vlm_model,
                 api_key=args.api_key,
                 api_key_env=args.api_key_env,
+                send_auth_header=args.send_auth_header,
                 temperature=args.temperature,
                 timeout_seconds=args.timeout_seconds,
                 max_retries=args.max_retries,
@@ -454,6 +522,7 @@ def main() -> None:
                 llm_model=args.llm_model,
                 api_key=args.api_key,
                 api_key_env=args.api_key_env,
+                send_auth_header=args.send_auth_header,
                 timeout_seconds=args.timeout_seconds,
                 max_key_moments=args.max_key_moments,
             )

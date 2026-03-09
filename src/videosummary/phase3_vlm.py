@@ -23,6 +23,7 @@ class Phase3VlmConfig:
     model: str = "deepseek-ai/DeepSeek-OCR"
     api_key: str | None = None
     api_key_env: str = "SILICONFLOW_API_KEY"
+    send_auth_header: bool = True
     include_image: bool = True
     temperature: float = 0.2
     timeout_seconds: float = 120.0
@@ -80,6 +81,27 @@ def _extract_content_text(message_content: Any) -> str:
     return str(message_content)
 
 
+def _is_local_lmstudio_base(api_base: str) -> bool:
+    base = api_base.strip().lower()
+    return ("127.0.0.1:1234" in base) or ("localhost:1234" in base)
+
+
+def _fetch_available_model_ids(api_base: str, timeout_seconds: float) -> list[str]:
+    url = api_base.rstrip("/") + "/models"
+    with httpx.Client(timeout=timeout_seconds) as client:
+        resp = client.get(url)
+        resp.raise_for_status()
+        data = resp.json()
+
+    rows = data.get("data", []) if isinstance(data, dict) else []
+    model_ids: list[str] = []
+    for row in rows:
+        model_id = str((row or {}).get("id", "")).strip()
+        if model_id:
+            model_ids.append(model_id)
+    return model_ids
+
+
 def _build_messages(item: dict[str, Any], include_image: bool) -> list[dict[str, Any]]:
     system_text = (
         "You are a video-frame analysis assistant. "
@@ -117,16 +139,13 @@ def _build_messages(item: dict[str, Any], include_image: bool) -> list[dict[str,
 async def _request_one(
     client: httpx.AsyncClient,
     endpoint: str,
-    api_key: str,
+    api_key: str | None,
+    send_auth_header: bool,
     row: dict[str, Any],
     config: Phase3VlmConfig,
 ) -> tuple[dict[str, Any], float]:
-    request_messages = _build_messages(row, include_image=config.include_image)
-    request_payload = {
-        "model": config.model,
-        "messages": request_messages,
-        "temperature": config.temperature,
-    }
+    image_enabled = config.include_image
+    degraded_no_image = False
 
     attempt = 0
     last_error = ""
@@ -135,12 +154,20 @@ async def _request_one(
     while attempt <= config.max_retries:
         attempt += 1
         try:
+            request_messages = _build_messages(row, include_image=image_enabled)
+            request_payload = {
+                "model": config.model,
+                "messages": request_messages,
+                "temperature": config.temperature,
+            }
+
+            headers = {"Content-Type": "application/json"}
+            if send_auth_header:
+                headers["Authorization"] = f"Bearer {api_key or ''}"
+
             resp = await client.post(
                 endpoint,
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
+                headers=headers,
                 json=request_payload,
             )
             resp.raise_for_status()
@@ -160,6 +187,7 @@ async def _request_one(
                 "usage": usage,
                 "status": "ok",
                 "attempt": attempt,
+                "degraded_no_image": degraded_no_image,
             }
             return record, time.perf_counter() - start
         except Exception as exc:
@@ -167,6 +195,20 @@ async def _request_one(
                 status_code = exc.response.status_code
                 body = exc.response.text[:400]
                 last_error = f"HTTP {status_code}: {body}"
+                if (
+                    image_enabled
+                    and status_code == 400
+                    and ("failed to process image" in body.lower())
+                ):
+                    # LM Studio may reject specific frames; fallback to text-only context for this item.
+                    image_enabled = False
+                    degraded_no_image = True
+                    log_phase(
+                        "phase3-vlm",
+                        f"条目 {row.get('id')} 图像处理失败，自动降级为文本模式重试。",
+                    )
+                    attempt -= 1
+                    continue
                 if status_code == 400:
                     last_error += " | 提示: 可能是模型不支持当前多模态消息格式，请更换支持 image_url 的模型。"
             else:
@@ -185,6 +227,7 @@ async def _request_one(
                     "error": last_error,
                     "status": "error",
                     "attempt": attempt,
+                    "degraded_no_image": degraded_no_image,
                 }
                 return record, time.perf_counter() - start
 
@@ -199,6 +242,7 @@ async def _request_one(
         "error": "Unknown error",
         "status": "error",
         "attempt": attempt,
+        "degraded_no_image": degraded_no_image,
     }
     return fallback, time.perf_counter() - start
 
@@ -206,7 +250,8 @@ async def _request_one(
 async def _run_requests_concurrently(
     rows: list[dict[str, Any]],
     endpoint: str,
-    api_key: str,
+    api_key: str | None,
+    send_auth_header: bool,
     config: Phase3VlmConfig,
 ) -> list[dict[str, Any]]:
     semaphore = asyncio.Semaphore(max(1, config.concurrency))
@@ -220,7 +265,7 @@ async def _run_requests_concurrently(
         async def _worker(index: int, row: dict[str, Any]) -> None:
             nonlocal done
             async with semaphore:
-                record, elapsed = await _request_one(client, endpoint, api_key, row, config)
+                record, elapsed = await _request_one(client, endpoint, api_key, send_auth_header, row, config)
             results[index] = record
             async with done_lock:
                 done += 1
@@ -242,10 +287,37 @@ def run_phase3_vlm(config: Phase3VlmConfig) -> Path:
         raise FileNotFoundError(f"VLM payload not found: {payload_path}")
 
     api_key = config.api_key or os.getenv(config.api_key_env)
-    if not api_key:
+    if config.send_auth_header and not api_key:
         raise RuntimeError(
             f"Missing API key. Provide --api-key or set environment variable {config.api_key_env}."
         )
+    if not config.send_auth_header:
+        log_phase(phase, "已禁用 Authorization 请求头（适配本地/无鉴权 OpenAI 兼容接口）")
+
+    if _is_local_lmstudio_base(config.api_base):
+        if config.include_image and config.concurrency > 1:
+            log_phase(
+                phase,
+                "检测到 LM Studio + 图像输入 + 并发>1，已自动降为串行并发=1，避免 Channel Error。",
+            )
+            config.concurrency = 1
+
+        with timed_step(phase, "预检本地模型可用性"):
+            try:
+                model_ids = _fetch_available_model_ids(config.api_base, timeout_seconds=min(20.0, config.timeout_seconds))
+            except Exception as exc:
+                raise RuntimeError(
+                    f"无法读取 LM Studio 模型列表: {exc}. 请确认 LM Studio 服务已启动且端口为 1234。"
+                ) from exc
+
+            if config.model not in model_ids:
+                sample = ", ".join(model_ids[:8]) if model_ids else "(空)"
+                raise RuntimeError(
+                    "LM Studio 模型名不匹配。"
+                    f" 当前配置: {config.model}\n"
+                    f" 可用模型(前8个): {sample}\n"
+                    "请在 GUI/CLI 中使用 /v1/models 返回的 정확 id，例如 qwen3.5-4b。"
+                )
 
     rows = _read_jsonl(payload_path)
     if config.max_items > 0:
@@ -263,7 +335,13 @@ def run_phase3_vlm(config: Phase3VlmConfig) -> Path:
     endpoint = config.api_base.rstrip("/") + "/chat/completions"
     with timed_step(phase, "执行视觉模型调用"):
         records = asyncio.run(
-            _run_requests_concurrently(rows=rows, endpoint=endpoint, api_key=str(api_key), config=config)
+            _run_requests_concurrently(
+                rows=rows,
+                endpoint=endpoint,
+                api_key=api_key,
+                send_auth_header=config.send_auth_header,
+                config=config,
+            )
         )
 
     success = sum(1 for x in records if x.get("status") == "ok")
@@ -288,6 +366,7 @@ def run_phase3_vlm(config: Phase3VlmConfig) -> Path:
             "temperature": config.temperature,
             "timeout_seconds": config.timeout_seconds,
             "api_key_env": config.api_key_env,
+            "send_auth_header": config.send_auth_header,
             "max_retries": config.max_retries,
             "retry_backoff_seconds": config.retry_backoff_seconds,
             "concurrency": max(1, config.concurrency),
