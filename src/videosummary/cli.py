@@ -76,6 +76,22 @@ def _apply_provider_defaults(args: argparse.Namespace) -> None:
         pass
 
 
+def _resolve_provider_settings(
+    provider: str,
+    api_base: str,
+    api_key_env: str,
+    send_auth_header: bool,
+) -> tuple[str, str, bool]:
+    ns = argparse.Namespace(
+        provider=provider,
+        api_base=api_base,
+        api_key_env=api_key_env,
+        send_auth_header=send_auth_header,
+    )
+    _apply_provider_defaults(ns)
+    return str(ns.api_base), str(ns.api_key_env), bool(ns.send_auth_header)
+
+
 def _load_dotenv_if_present(dotenv_path: Path = Path(".env")) -> None:
     if not dotenv_path.exists():
         return
@@ -335,6 +351,26 @@ def build_parser() -> argparse.ArgumentParser:
     run_all.add_argument("--use-llm-polish", action="store_true", help="Enable phase4 polishing")
     run_all.add_argument("--max-key-moments", type=int, default=12, help="Phase4 key moments")
     run_all.add_argument(
+        "--vlm-provider",
+        default=None,
+        choices=["siliconflow", "openai", "lmstudio", "custom"],
+        help="Override provider for phase3-vlm",
+    )
+    run_all.add_argument("--vlm-api-base", default=None, help="Override API base for phase3-vlm")
+    run_all.add_argument("--vlm-api-key", default=None, help="Override API key for phase3-vlm")
+    run_all.add_argument("--vlm-api-key-env", default=None, help="Override API key env var for phase3-vlm")
+    run_all.add_argument("--vlm-no-auth", action="store_true", help="Disable auth header only for phase3-vlm")
+    run_all.add_argument(
+        "--llm-provider",
+        default=None,
+        choices=["siliconflow", "openai", "lmstudio", "custom"],
+        help="Override provider for phase4-summary",
+    )
+    run_all.add_argument("--llm-api-base", default=None, help="Override API base for phase4-summary")
+    run_all.add_argument("--llm-api-key", default=None, help="Override API key for phase4-summary")
+    run_all.add_argument("--llm-api-key-env", default=None, help="Override API key env var for phase4-summary")
+    run_all.add_argument("--llm-no-auth", action="store_true", help="Disable auth header only for phase4-summary")
+    run_all.add_argument(
         "--preset",
         default="default",
         choices=["default", "game", "speech"],
@@ -466,6 +502,33 @@ def main() -> None:
         _apply_phase3_preset(args)
         _apply_phase4_preset(args)
 
+        vlm_provider = args.vlm_provider or args.provider
+        llm_provider = args.llm_provider or args.provider
+
+        vlm_api_base_raw = args.vlm_api_base or args.api_base
+        llm_api_base_raw = args.llm_api_base or args.api_base
+        vlm_api_key_env_raw = args.vlm_api_key_env or args.api_key_env
+        llm_api_key_env_raw = args.llm_api_key_env or args.api_key_env
+
+        vlm_send_auth = args.send_auth_header and (not args.vlm_no_auth)
+        llm_send_auth = args.send_auth_header and (not args.llm_no_auth)
+
+        vlm_api_base, vlm_api_key_env, vlm_send_auth = _resolve_provider_settings(
+            provider=vlm_provider,
+            api_base=vlm_api_base_raw,
+            api_key_env=vlm_api_key_env_raw,
+            send_auth_header=vlm_send_auth,
+        )
+        llm_api_base, llm_api_key_env, llm_send_auth = _resolve_provider_settings(
+            provider=llm_provider,
+            api_base=llm_api_base_raw,
+            api_key_env=llm_api_key_env_raw,
+            send_auth_header=llm_send_auth,
+        )
+
+        vlm_api_key = args.vlm_api_key if args.vlm_api_key else args.api_key
+        llm_api_key = args.llm_api_key if args.llm_api_key else args.api_key
+
         input_video = Path(args.input).resolve()
         output_root = Path(args.output).resolve()
         log_phase("run-all", f"开始端到端流程: {input_video.name}")
@@ -499,11 +562,11 @@ def main() -> None:
             Phase3VlmConfig(
                 vlm_payload_jsonl=phase2_dir / "vlm_payload.jsonl",
                 output_root=phase2_dir / "phase3_vlm",
-                api_base=args.api_base,
+                api_base=vlm_api_base,
                 model=args.vlm_model,
-                api_key=args.api_key,
-                api_key_env=args.api_key_env,
-                send_auth_header=args.send_auth_header,
+                api_key=vlm_api_key,
+                api_key_env=vlm_api_key_env,
+                send_auth_header=vlm_send_auth,
                 temperature=args.temperature,
                 timeout_seconds=args.timeout_seconds,
                 max_retries=args.max_retries,
@@ -518,11 +581,11 @@ def main() -> None:
                 phase2_payload_jsonl=phase2_dir / "vlm_payload.jsonl",
                 output_root=phase3_dir / "phase4_summary",
                 use_llm_polish=args.use_llm_polish,
-                api_base=args.api_base,
+                api_base=llm_api_base,
                 llm_model=args.llm_model,
-                api_key=args.api_key,
-                api_key_env=args.api_key_env,
-                send_auth_header=args.send_auth_header,
+                api_key=llm_api_key,
+                api_key_env=llm_api_key_env,
+                send_auth_header=llm_send_auth,
                 timeout_seconds=args.timeout_seconds,
                 max_key_moments=args.max_key_moments,
             )

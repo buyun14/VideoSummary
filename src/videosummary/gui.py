@@ -7,12 +7,19 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
+import urllib.error
+import urllib.request
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 
 class VideoSummaryPanel:
     BUILTIN_PRESETS = ["default", "game", "speech"]
+    PROVIDER_DEFAULT_BASE = {
+        "siliconflow": "https://api.siliconflow.cn/v1",
+        "openai": "https://api.openai.com/v1",
+        "lmstudio": "http://127.0.0.1:1234/v1",
+    }
 
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -34,9 +41,17 @@ class VideoSummaryPanel:
         self.hf_home_var = tk.StringVar(value="")
         self.offline_var = tk.BooleanVar(value=False)
         self.vlm_model_var = tk.StringVar(value="deepseek-ai/DeepSeek-OCR")
-        self.provider_var = tk.StringVar(value="siliconflow")
-        self.no_auth_var = tk.BooleanVar(value=False)
+        self.vlm_provider_var = tk.StringVar(value="siliconflow")
+        self.vlm_api_base_var = tk.StringVar(value="https://api.siliconflow.cn/v1")
+        self.vlm_api_key_var = tk.StringVar(value="")
+        self.vlm_api_key_env_var = tk.StringVar(value="SILICONFLOW_API_KEY")
+        self.vlm_no_auth_var = tk.BooleanVar(value=False)
         self.llm_model_var = tk.StringVar(value="Qwen/Qwen3-8B")
+        self.llm_provider_var = tk.StringVar(value="siliconflow")
+        self.llm_api_base_var = tk.StringVar(value="https://api.siliconflow.cn/v1")
+        self.llm_api_key_var = tk.StringVar(value="")
+        self.llm_api_key_env_var = tk.StringVar(value="SILICONFLOW_API_KEY")
+        self.llm_no_auth_var = tk.BooleanVar(value=False)
         self.interval_var = tk.StringVar(value="30")
         self.context_window_var = tk.StringVar(value="1")
         self.timeout_var = tk.StringVar(value="120")
@@ -47,6 +62,8 @@ class VideoSummaryPanel:
 
         self._load_settings()
         self._build_form()
+        self._sync_channel_base_url("vlm", force=False)
+        self._sync_channel_base_url("llm", force=False)
         self._build_log_view()
         self._refresh_preset_values()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -78,9 +95,15 @@ class VideoSummaryPanel:
             "hf_home": self.hf_home_var.get().strip(),
             "offline": bool(self.offline_var.get()),
             "vlm_model": self.vlm_model_var.get().strip() or "deepseek-ai/DeepSeek-OCR",
-            "provider": self.provider_var.get().strip() or "siliconflow",
-            "no_auth": bool(self.no_auth_var.get()),
             "llm_model": self.llm_model_var.get().strip() or "Qwen/Qwen3-8B",
+            "vlm_provider": self.vlm_provider_var.get().strip() or "siliconflow",
+            "vlm_api_base": self.vlm_api_base_var.get().strip() or "https://api.siliconflow.cn/v1",
+            "vlm_api_key_env": self.vlm_api_key_env_var.get().strip() or "SILICONFLOW_API_KEY",
+            "vlm_no_auth": bool(self.vlm_no_auth_var.get()),
+            "llm_provider": self.llm_provider_var.get().strip() or "siliconflow",
+            "llm_api_base": self.llm_api_base_var.get().strip() or "https://api.siliconflow.cn/v1",
+            "llm_api_key_env": self.llm_api_key_env_var.get().strip() or "SILICONFLOW_API_KEY",
+            "llm_no_auth": bool(self.llm_no_auth_var.get()),
             "interval_seconds": self.interval_var.get().strip() or "30",
             "context_window": self.context_window_var.get().strip() or "1",
             "timeout_seconds": self.timeout_var.get().strip() or "120",
@@ -104,9 +127,17 @@ class VideoSummaryPanel:
         self.hf_home_var.set(str(state.get("hf_home", self.hf_home_var.get())))
         self.offline_var.set(bool(state.get("offline", self.offline_var.get())))
         self.vlm_model_var.set(str(state.get("vlm_model", self.vlm_model_var.get())))
-        self.provider_var.set(str(state.get("provider", self.provider_var.get())))
-        self.no_auth_var.set(bool(state.get("no_auth", self.no_auth_var.get())))
         self.llm_model_var.set(str(state.get("llm_model", self.llm_model_var.get())))
+        self.vlm_provider_var.set(str(state.get("vlm_provider", self.vlm_provider_var.get())))
+        self.vlm_api_base_var.set(str(state.get("vlm_api_base", self.vlm_api_base_var.get())))
+        self.vlm_api_key_env_var.set(str(state.get("vlm_api_key_env", self.vlm_api_key_env_var.get())))
+        self.vlm_no_auth_var.set(bool(state.get("vlm_no_auth", self.vlm_no_auth_var.get())))
+        self.llm_provider_var.set(str(state.get("llm_provider", self.llm_provider_var.get())))
+        self.llm_api_base_var.set(str(state.get("llm_api_base", self.llm_api_base_var.get())))
+        self.llm_api_key_env_var.set(str(state.get("llm_api_key_env", self.llm_api_key_env_var.get())))
+        self.llm_no_auth_var.set(bool(state.get("llm_no_auth", self.llm_no_auth_var.get())))
+        self._sync_channel_base_url("vlm", force=False)
+        self._sync_channel_base_url("llm", force=False)
         self.interval_var.set(str(state.get("interval_seconds", self.interval_var.get())))
         self.context_window_var.set(str(state.get("context_window", self.context_window_var.get())))
         self.timeout_var.set(str(state.get("timeout_seconds", self.timeout_var.get())))
@@ -206,20 +237,54 @@ class VideoSummaryPanel:
         ttk.Checkbutton(frame, text="ASR 离线模式", variable=self.offline_var).grid(row=row, column=1, sticky=tk.W)
 
         row += 1
-        ttk.Label(frame, text="模型提供商").grid(row=row, column=0, sticky=tk.W)
-        ttk.Combobox(
+        ttk.Label(frame, text="VLM 提供商").grid(row=row, column=0, sticky=tk.W)
+        self.vlm_provider_combo = ttk.Combobox(
             frame,
-            textvariable=self.provider_var,
+            textvariable=self.vlm_provider_var,
             values=["siliconflow", "openai", "lmstudio", "custom"],
             width=18,
-        ).grid(row=row, column=1, sticky=tk.W)
-        ttk.Checkbutton(frame, text="禁用鉴权头(no-auth)", variable=self.no_auth_var).grid(row=row, column=1, sticky=tk.E)
+        )
+        self.vlm_provider_combo.grid(row=row, column=1, sticky=tk.W)
+        self.vlm_provider_combo.bind("<<ComboboxSelected>>", self._on_vlm_provider_changed)
+        ttk.Checkbutton(frame, text="VLM 禁用鉴权头(no-auth)", variable=self.vlm_no_auth_var).grid(row=row, column=1, sticky=tk.E)
+
+        row += 1
+        ttk.Label(frame, text="VLM API Base").grid(row=row, column=0, sticky=tk.W)
+        ttk.Entry(frame, textvariable=self.vlm_api_base_var, width=30).grid(row=row, column=1, sticky=tk.W)
+        ttk.Button(frame, text="测试 VLM 连接", command=self._test_vlm_connection).grid(row=row, column=2, padx=8)
+        ttk.Label(frame, text="VLM API Key Env").grid(row=row, column=1, sticky=tk.E, padx=(0, 260))
+        ttk.Entry(frame, textvariable=self.vlm_api_key_env_var, width=34).grid(row=row, column=1, sticky=tk.E)
+
+        row += 1
+        ttk.Label(frame, text="VLM API Key(可选)").grid(row=row, column=0, sticky=tk.W)
+        ttk.Entry(frame, textvariable=self.vlm_api_key_var, width=30, show="*").grid(row=row, column=1, sticky=tk.W)
+        ttk.Label(frame, text="LLM 提供商").grid(row=row, column=1, sticky=tk.E, padx=(0, 260))
+        self.llm_provider_combo = ttk.Combobox(
+            frame,
+            textvariable=self.llm_provider_var,
+            values=["siliconflow", "openai", "lmstudio", "custom"],
+            width=18,
+        )
+        self.llm_provider_combo.grid(row=row, column=1, sticky=tk.E)
+        self.llm_provider_combo.bind("<<ComboboxSelected>>", self._on_llm_provider_changed)
 
         row += 1
         ttk.Label(frame, text="LLM 模型").grid(row=row, column=0, sticky=tk.W)
         ttk.Entry(frame, textvariable=self.llm_model_var, width=20).grid(row=row, column=1, sticky=tk.W)
         ttk.Label(frame, text="截帧间隔(s)").grid(row=row, column=1, sticky=tk.E, padx=(0, 260))
         ttk.Entry(frame, textvariable=self.interval_var, width=8).grid(row=row, column=1, sticky=tk.E)
+
+        row += 1
+        ttk.Label(frame, text="LLM API Base").grid(row=row, column=0, sticky=tk.W)
+        ttk.Entry(frame, textvariable=self.llm_api_base_var, width=30).grid(row=row, column=1, sticky=tk.W)
+        ttk.Button(frame, text="测试 LLM 连接", command=self._test_llm_connection).grid(row=row, column=2, padx=8)
+        ttk.Label(frame, text="LLM API Key Env").grid(row=row, column=1, sticky=tk.E, padx=(0, 260))
+        ttk.Entry(frame, textvariable=self.llm_api_key_env_var, width=34).grid(row=row, column=1, sticky=tk.E)
+
+        row += 1
+        ttk.Label(frame, text="LLM API Key(可选)").grid(row=row, column=0, sticky=tk.W)
+        ttk.Entry(frame, textvariable=self.llm_api_key_var, width=30, show="*").grid(row=row, column=1, sticky=tk.W)
+        ttk.Checkbutton(frame, text="LLM 禁用鉴权头(no-auth)", variable=self.llm_no_auth_var).grid(row=row, column=1, sticky=tk.E)
 
         row += 1
         ttk.Label(frame, text="上下文窗口").grid(row=row, column=0, sticky=tk.W)
@@ -285,6 +350,141 @@ class VideoSummaryPanel:
                 break
             self._append_log(line)
         self.root.after(200, self._drain_log_queue)
+
+    def _provider_default_base(self, provider: str) -> str:
+        return self.PROVIDER_DEFAULT_BASE.get(provider.strip(), "")
+
+    def _known_default_bases(self) -> set[str]:
+        return set(self.PROVIDER_DEFAULT_BASE.values())
+
+    def _sync_channel_base_url(self, channel: str, *, force: bool) -> None:
+        if channel == "vlm":
+            provider = self.vlm_provider_var.get().strip() or "siliconflow"
+            base_var = self.vlm_api_base_var
+        else:
+            provider = self.llm_provider_var.get().strip() or "siliconflow"
+            base_var = self.llm_api_base_var
+
+        default_base = self._provider_default_base(provider)
+        if not default_base:
+            return
+
+        current = base_var.get().strip()
+        if force or (not current) or (current in self._known_default_bases()):
+            base_var.set(default_base)
+
+    def _on_vlm_provider_changed(self, _event: object | None = None) -> None:
+        self._sync_channel_base_url("vlm", force=True)
+
+    def _on_llm_provider_changed(self, _event: object | None = None) -> None:
+        self._sync_channel_base_url("llm", force=True)
+
+    def _resolve_channel_runtime_key(self, channel: str) -> tuple[str, str, bool, str, str]:
+        if channel == "vlm":
+            provider = self.vlm_provider_var.get().strip() or "siliconflow"
+            api_base = self.vlm_api_base_var.get().strip() or self._provider_default_base(provider)
+            api_key_env = self.vlm_api_key_env_var.get().strip() or "SILICONFLOW_API_KEY"
+            no_auth = bool(self.vlm_no_auth_var.get())
+            model = self.vlm_model_var.get().strip() or "deepseek-ai/DeepSeek-OCR"
+            key_text = self.vlm_api_key_var.get().strip()
+        else:
+            provider = self.llm_provider_var.get().strip() or "siliconflow"
+            api_base = self.llm_api_base_var.get().strip() or self._provider_default_base(provider)
+            api_key_env = self.llm_api_key_env_var.get().strip() or "SILICONFLOW_API_KEY"
+            no_auth = bool(self.llm_no_auth_var.get())
+            model = self.llm_model_var.get().strip() or "Qwen/Qwen3-8B"
+            key_text = self.llm_api_key_var.get().strip()
+
+        runtime_key = key_text or os.environ.get(api_key_env, "")
+        return api_base, runtime_key, no_auth, model, provider
+
+    def _json_post(self, url: str, payload: dict[str, object], headers: dict[str, str], timeout: float) -> dict[str, object]:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        request = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            content = response.read().decode("utf-8", errors="replace")
+        return json.loads(content) if content else {}
+
+    def _json_get(self, url: str, headers: dict[str, str], timeout: float) -> dict[str, object]:
+        request = urllib.request.Request(url, headers=headers, method="GET")
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            content = response.read().decode("utf-8", errors="replace")
+        return json.loads(content) if content else {}
+
+    def _run_connection_test(self, channel: str) -> None:
+        api_base, runtime_key, no_auth, model, provider = self._resolve_channel_runtime_key(channel)
+        timeout = float(self.timeout_var.get().strip() or "120")
+        base_url = api_base.rstrip("/")
+        models_url = base_url + "/models"
+        chat_url = base_url + "/chat/completions"
+
+        if not base_url:
+            messagebox.showerror("参数错误", f"{channel.upper()} API Base 不能为空")
+            return
+
+        self._append_log("=" * 80)
+        self._append_log(f"开始测试 {channel.upper()} 连接: provider={provider}, base={base_url}, model={model}")
+
+        def _worker() -> None:
+            headers = {"Content-Type": "application/json"}
+            if not no_auth:
+                if not runtime_key:
+                    self.log_queue.put(
+                        f"{channel.upper()} 连接测试失败: 需要鉴权但未提供 API Key（可填 API Key 或设置环境变量）"
+                    )
+                    return
+                headers["Authorization"] = f"Bearer {runtime_key}"
+
+            try:
+                models_data = self._json_get(models_url, headers=headers, timeout=timeout)
+                model_ids: list[str] = []
+                for row in models_data.get("data", []) if isinstance(models_data, dict) else []:
+                    model_id = str((row or {}).get("id", "")).strip()
+                    if model_id:
+                        model_ids.append(model_id)
+                preview = ", ".join(model_ids[:5]) if model_ids else "(空)"
+                self.log_queue.put(f"{channel.upper()} /v1/models 成功，可用模型示例: {preview}")
+            except urllib.error.HTTPError as exc:
+                body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
+                self.log_queue.put(f"{channel.upper()} /v1/models 失败: HTTP {exc.code} {body[:200]}")
+                return
+            except Exception as exc:
+                self.log_queue.put(f"{channel.upper()} /v1/models 失败: {exc}")
+                return
+
+            try:
+                payload = {
+                    "model": model,
+                    "temperature": 0,
+                    "messages": [
+                        {"role": "system", "content": "You are a connectivity test assistant."},
+                        {"role": "user", "content": "Reply with OK only."},
+                    ],
+                }
+                result = self._json_post(chat_url, payload=payload, headers=headers, timeout=timeout)
+                choices = result.get("choices", []) if isinstance(result, dict) else []
+                preview = ""
+                if choices:
+                    message = (choices[0] or {}).get("message", {})
+                    preview = str(message.get("content", "")).strip().replace("\n", " ")[:80]
+                self.log_queue.put(
+                    f"{channel.upper()} 最小 chat 请求成功，返回片段: {preview or '(空返回但请求成功)'}"
+                )
+            except urllib.error.HTTPError as exc:
+                body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
+                self.log_queue.put(
+                    f"{channel.upper()} 最小 chat 请求失败: HTTP {exc.code} {body[:260]}"
+                )
+            except Exception as exc:
+                self.log_queue.put(f"{channel.upper()} 最小 chat 请求失败: {exc}")
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _test_vlm_connection(self) -> None:
+        self._run_connection_test("vlm")
+
+    def _test_llm_connection(self) -> None:
+        self._run_connection_test("llm")
 
     def _refresh_preset_values(self) -> None:
         names = self._builtin_presets + sorted(self.custom_presets.keys())
@@ -406,6 +606,10 @@ class VideoSummaryPanel:
         flags = [
             "--model",
             self.vlm_model_var.get().strip() or "deepseek-ai/DeepSeek-OCR",
+            "--api-base",
+            self.vlm_api_base_var.get().strip() or "https://api.siliconflow.cn/v1",
+            "--api-key-env",
+            self.vlm_api_key_env_var.get().strip() or "SILICONFLOW_API_KEY",
             "--concurrency",
             self.concurrency_var.get().strip() or "3",
             "--max-retries",
@@ -413,11 +617,11 @@ class VideoSummaryPanel:
             "--timeout-seconds",
             self.timeout_var.get().strip() or "120",
             "--provider",
-            self.provider_var.get().strip() or "siliconflow",
+            self.vlm_provider_var.get().strip() or "siliconflow",
             "--preset",
             self.preset_var.get().strip() or "default",
         ]
-        if self.no_auth_var.get():
+        if self.vlm_no_auth_var.get():
             flags.append("--no-auth")
         return flags
 
@@ -425,8 +629,12 @@ class VideoSummaryPanel:
         flags = [
             "--llm-model",
             self.llm_model_var.get().strip() or "Qwen/Qwen3-8B",
+            "--api-base",
+            self.llm_api_base_var.get().strip() or "https://api.siliconflow.cn/v1",
+            "--api-key-env",
+            self.llm_api_key_env_var.get().strip() or "SILICONFLOW_API_KEY",
             "--provider",
-            self.provider_var.get().strip() or "siliconflow",
+            self.llm_provider_var.get().strip() or "siliconflow",
             "--preset",
             self.preset_var.get().strip() or "default",
             "--timeout-seconds",
@@ -434,7 +642,7 @@ class VideoSummaryPanel:
         ]
         if self.use_llm_polish_var.get():
             flags.append("--use-llm-polish")
-        if self.no_auth_var.get():
+        if self.llm_no_auth_var.get():
             flags.append("--no-auth")
         return flags
 
@@ -460,13 +668,29 @@ class VideoSummaryPanel:
             "--model",
             self.asr_model_var.get().strip() or "small",
             "--provider",
-            self.provider_var.get().strip() or "siliconflow",
+            self.vlm_provider_var.get().strip() or "siliconflow",
+            "--api-base",
+            self.vlm_api_base_var.get().strip() or "https://api.siliconflow.cn/v1",
+            "--api-key-env",
+            self.vlm_api_key_env_var.get().strip() or "SILICONFLOW_API_KEY",
             "--hf-endpoint",
             self.hf_endpoint_var.get().strip() or "https://hf-mirror.com",
             "--vlm-model",
             self.vlm_model_var.get().strip() or "deepseek-ai/DeepSeek-OCR",
+            "--vlm-provider",
+            self.vlm_provider_var.get().strip() or "siliconflow",
+            "--vlm-api-base",
+            self.vlm_api_base_var.get().strip() or "https://api.siliconflow.cn/v1",
+            "--vlm-api-key-env",
+            self.vlm_api_key_env_var.get().strip() or "SILICONFLOW_API_KEY",
             "--llm-model",
             self.llm_model_var.get().strip() or "Qwen/Qwen3-8B",
+            "--llm-provider",
+            self.llm_provider_var.get().strip() or "siliconflow",
+            "--llm-api-base",
+            self.llm_api_base_var.get().strip() or "https://api.siliconflow.cn/v1",
+            "--llm-api-key-env",
+            self.llm_api_key_env_var.get().strip() or "SILICONFLOW_API_KEY",
             "--interval-seconds",
             self.interval_var.get().strip() or "30",
             "--context-window",
@@ -493,8 +717,11 @@ class VideoSummaryPanel:
             cmd.extend(["--hf-home", self.hf_home_var.get().strip()])
         if self.offline_var.get():
             cmd.append("--offline")
-        if self.no_auth_var.get():
+        if self.vlm_no_auth_var.get():
             cmd.append("--no-auth")
+            cmd.append("--vlm-no-auth")
+        if self.llm_no_auth_var.get():
+            cmd.append("--llm-no-auth")
 
         return cmd
 
@@ -563,6 +790,18 @@ class VideoSummaryPanel:
         cmd.extend(self._phase4_flags())
         return cmd
 
+    def _runtime_api_key_env(self) -> dict[str, str]:
+        env: dict[str, str] = {}
+        vlm_key = self.vlm_api_key_var.get().strip()
+        llm_key = self.llm_api_key_var.get().strip()
+        vlm_env = self.vlm_api_key_env_var.get().strip() or "SILICONFLOW_API_KEY"
+        llm_env = self.llm_api_key_env_var.get().strip() or "SILICONFLOW_API_KEY"
+        if vlm_key:
+            env[vlm_env] = vlm_key
+        if llm_key:
+            env[llm_env] = llm_key
+        return env
+
     def _start_command(self, cmd: list[str], title: str) -> None:
         self._save_settings()
 
@@ -577,6 +816,7 @@ class VideoSummaryPanel:
             env["PYTHONPATH"] = src_path if not existing else f"{src_path};{existing}"
             env.setdefault("PYTHONIOENCODING", "utf-8")
             env.setdefault("PYTHONUTF8", "1")
+            env.update(self._runtime_api_key_env())
 
             self.process = subprocess.Popen(
                 cmd,

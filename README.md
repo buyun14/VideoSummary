@@ -232,6 +232,16 @@ LM Studio 示例（本地 OpenAI 兼容接口）：
 .\.venv\Scripts\python -m videosummary.cli --verbose run-all --provider lmstudio --no-auth --input "data_test/Base Profile 2025.07.09 - 17.20.58.03.mp4" --preset game --with-audio-summary --use-llm-polish --vlm-model "qwen2.5-vl-7b-instruct" --llm-model "qwen2.5-7b-instruct"
 ```
 
+VLM 和 LLM 分别走不同 provider（推荐架构）：
+
+```powershell
+.\.venv\Scripts\python -m videosummary.cli --verbose run-all --input "data_test/Base Profile 2025.07.09 - 17.20.58.03.mp4" --preset game --with-audio-summary --use-llm-polish --vlm-model "qwen2.5-vl-7b-instruct" --vlm-provider lmstudio --vlm-api-base "http://127.0.0.1:1234/v1" --vlm-no-auth --llm-model "Qwen/Qwen3-8B" --llm-provider siliconflow --llm-api-base "https://api.siliconflow.cn/v1" --llm-api-key-env "SILICONFLOW_API_KEY"
+```
+
+`run-all` 支持的独立覆盖参数：
+- `--vlm-provider --vlm-api-base --vlm-api-key --vlm-api-key-env --vlm-no-auth`
+- `--llm-provider --llm-api-base --llm-api-key --llm-api-key-env --llm-no-auth`
+
 可追加参数：
 - `--concurrency 4`：提高 phase3 并发度
 - `--max-retries 1 --retry-backoff-seconds 2`：控制失败重试策略
@@ -248,5 +258,10 @@ GUI 功能：
 - 选择视频和输出目录
 - 选择预设与模型参数
 - 配置 HF 镜像、代理、本地模型目录、离线模式
+- VLM/LLM 分别配置 provider、API Base、API Key Env、no-auth
+- “测试 VLM 连接”/“测试 LLM 连接”：会依次测试 `/v1/models` 与一次最小 `chat/completions` 请求
+- provider 联动默认 base_url：切换到 `lmstudio` 时会自动带出 `http://127.0.0.1:1234/v1`
 - 一键运行全流程
 - 实时查看日志并可手动停止
+
+说明：GUI 的 API Key 输入仅用于本次运行，密钥会注入子进程环境变量，不会拼接到命令行日志里。
